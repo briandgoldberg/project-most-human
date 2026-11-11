@@ -172,6 +172,74 @@ function StartSession({ summary }: { summary: TrainingSummary }) {
 // The room
 // ---------------------------------------------------------------------------
 
+/** Owner only: say what players on the public board really were. */
+function BoardLabels({ summary, onChange }: { summary: TrainingSummary; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function mark(roundId: string, entryId: string, kind: Kind) {
+    setBusy(entryId);
+    setError(null);
+    try {
+      await api.train.label(roundId, entryId, kind);
+      onChange();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const choice = (active: boolean) =>
+    `border px-2.5 py-1 text-xs disabled:opacity-40 ${active ? "border-pulse text-pulse" : "border-line text-dim hover:border-paper hover:text-paper"}`;
+
+  return (
+    <section className="mb-10">
+      <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">
+        The public board · only you see this
+      </h2>
+      <p className="mt-3 max-w-xl text-xs text-dim">
+        If you know who a player really was, say so. It becomes training data. Their score, their place and the pool
+        don&rsquo;t change, and nobody else can see what you marked.
+      </p>
+      {summary.board.length === 0 ? (
+        <p className="py-6 text-sm text-dim">Nobody has finished the public competition in the last few days.</p>
+      ) : (
+        <ol className="mt-2 divide-y divide-line">
+          {summary.board.map((row) => (
+            <li key={row.entryId} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5 text-sm">
+              <span className="min-w-0 flex-1 break-all">
+                {row.handle} <span className="text-xs text-dim">{row.roundId.slice(5)}</span>
+              </span>
+              <span className="text-xs text-dim">judged {row.verdict === "human" ? "human" : "machine"}</span>
+              <span className="w-12 text-right font-display text-lg tabular-nums">{row.score.toFixed(1)}</span>
+              <span className="flex gap-2">
+                {(["human", "agent"] as const).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    disabled={busy === row.entryId}
+                    aria-pressed={row.label === kind}
+                    onClick={() => mark(row.roundId, row.entryId, kind)}
+                    className={choice(row.label === kind)}
+                  >
+                    {kind === "human" ? "Human" : "Agent"}
+                  </button>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-sm text-pulse">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function Room({ summary, onChange, onLock }: { summary: TrainingSummary; onChange: () => void; onLock: () => void }) {
   const [retraining, setRetraining] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -248,15 +316,22 @@ function Room({ summary, onChange, onLock }: { summary: TrainingSummary; onChang
         </p>
       )}
 
+      {summary.owner && <BoardLabels summary={summary} onChange={onChange} />}
+
       <section>
-        <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">Recent sessions</h2>
+        <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">
+          {summary.owner ? "Recent training data" : "Recent sessions"}
+        </h2>
         {summary.recent.length === 0 ? (
           <p className="py-6 text-sm text-dim">No sessions yet.</p>
         ) : (
           <ol className="divide-y divide-line">
             {summary.recent.map((s) => (
               <li key={s.id} className="flex items-baseline gap-3 py-2.5 text-sm">
-                <span className="min-w-0 flex-1 break-all">{s.handle}</span>
+                <span className="min-w-0 flex-1 break-all">
+                  {s.handle}
+                  {s.fromBoard && <span className="ml-2 text-xs text-dim">from the board</span>}
+                </span>
                 <span className="w-14 shrink-0 text-xs text-dim">{s.truth}</span>
                 <span className={`w-20 shrink-0 text-xs ${s.judgeCorrect ? "text-dim" : "text-pulse"}`}>
                   {s.truth === "human" ? (s.judgeCorrect ? "recognised" : "misjudged") : s.judgeCorrect ? "caught" : "fooled it"}

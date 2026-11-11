@@ -444,7 +444,10 @@ export interface PlayerResult {
 function playerResult(state: RoundState, entry: Entry): PlayerResult {
   const result = entry.result!;
   const base = { score: result.score, verdict: result.verdict, quip: result.quip, roundId: entry.roundId, handle: entry.handle };
-  if (entry.label) return { ...base, training: { truth: entry.label, judgeCorrect: result.verdict === entry.label } };
+  // Only training sessions get the reveal. A competitor someone labelled later still just sees their rank.
+  if (!entry.prizeEligible && entry.label) {
+    return { ...base, training: { truth: entry.label, judgeCorrect: result.verdict === entry.label } };
+  }
   const board = ranked(state);
   return { ...base, rank: board.findIndex((e) => e.id === entry.id) + 1, scored: board.length };
 }
@@ -475,28 +478,84 @@ async function score(roundId: string, entryId: string): Promise<PlayerResult> {
 
   // The reveal: only now that the verdict is locked in does the truth meet it.
   if (scoredNow && scored.label && scored.cohortId) {
-    await appendTraining({
-      entryId,
-      roundId,
-      recordedAt: Date.now(),
-      label: scored.label,
-      cohortId: scored.cohortId,
-      handle: scored.handle,
-      questions: questionsOf(finalState, scored),
-      answers: scored.answers.map(({ questionId, text, serverLatencyMs, features: f }) => ({
-        questionId,
-        text,
-        serverLatencyMs,
-        features: f,
-      })),
-      features,
-      env: scored.env,
-      judge: scored.result!,
-      judgeCorrect: scored.result!.verdict === scored.label,
-      telemetry: await readTelemetry(roundId, entryId),
-    });
+    await recordExample(finalState, scored, scored.label, scored.cohortId, "session");
   }
   return playerResult(finalState, scored);
+}
+
+/** File a scored entry, with its now-known truth, as a training example. */
+async function recordExample(
+  state: RoundState,
+  entry: Entry,
+  label: Kind,
+  cohortId: string,
+  source: "session" | "board",
+): Promise<void> {
+  await appendTraining({
+    entryId: entry.id,
+    roundId: entry.roundId,
+    recordedAt: Date.now(),
+    label,
+    cohortId,
+    source,
+    handle: entry.handle,
+    questions: questionsOf(state, entry),
+    answers: entry.answers.map(({ questionId, text, serverLatencyMs, features }) => ({
+      questionId,
+      text,
+      serverLatencyMs,
+      features,
+    })),
+    features: entry.features ?? aggregateFeatures(entry.answers, entry.env, entry.userAgent),
+    env: entry.env,
+    judge: entry.result!,
+    judgeCorrect: entry.result!.verdict === label,
+    telemetry: await readTelemetry(entry.roundId, entry.id),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Labelling the public board after the fact
+// ---------------------------------------------------------------------------
+
+/**
+ * Scored competition entries from the last few rounds, for a trainer who knows
+ * who some of the players really are.
+ */
+export async function boardForLabelling(days = 3) {
+  const rows: { roundId: string; entryId: string; handle: string; score: number; verdict: Kind; label?: Kind }[] = [];
+  for (let i = 0; i < days; i++) {
+    const state = await readRound(roundIdFor(Date.now() - i * DAY_MS));
+    if (!state) continue;
+    for (const e of ranked(state)) {
+      rows.push({ roundId: e.roundId, entryId: e.id, handle: e.handle, score: e.result!.score, verdict: e.result!.verdict, label: e.label });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Record what a competition player really was. The judge had already scored
+ * them blind, so this adds a training example without touching their score,
+ * their rank or the pool. Labelling again with a different answer corrects it.
+ */
+export async function labelCompetitor(input: { roundId: unknown; entryId: unknown; label: unknown; cohort: Cohort }) {
+  const { roundId, entryId, label, cohort } = input;
+  if (label !== "human" && label !== "agent") throw new GameError(400, "bad_label", "Label must be human or agent");
+  if (typeof roundId !== "string" || typeof entryId !== "string" || !(await readRound(roundId))) {
+    throw new GameError(404, "no_entry", "That entry doesn't exist");
+  }
+  const { state, entry, changed } = await updateRound(roundId, (s) => {
+    const e = s.entries[entryId];
+    if (!e || !e.prizeEligible) throw new GameError(404, "no_entry", "That entry isn't on the public board");
+    if (e.status !== "scored") throw new GameError(409, "not_scored", "That player hasn't been judged yet");
+    const isChange = e.label !== label;
+    e.label = label;
+    e.labelledBy = cohort.id;
+    return { state: s, entry: e, changed: isChange };
+  });
+  if (changed) await recordExample(state, entry, label, cohort.id, "board");
+  return { handle: entry.handle, label, judgeCorrect: entry.result!.verdict === label };
 }
 
 export type AnswerOutcome =

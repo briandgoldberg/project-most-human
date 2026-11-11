@@ -49,6 +49,8 @@ export interface PlayerResult {
 
 export interface TrainingSummary {
   cohort: { id: string; label: Kind | "ask" };
+  owner: boolean;
+  board: { roundId: string; entryId: string; handle: string; score: number; verdict: Kind; label?: Kind }[];
   human: { total: number; judgedRight: number };
   agent: { total: number; judgedRight: number };
   neededPerKind: number;
@@ -60,7 +62,7 @@ export interface TrainingSummary {
     signals: { key: string; weight: number }[];
   } | null;
   llmJudge: boolean;
-  recent: { id: string; at: number; handle: string; truth: Kind; score: number; judgeCorrect: boolean }[];
+  recent: { id: string; at: number; handle: string; truth: Kind; fromBoard: boolean; score: number; judgeCorrect: boolean }[];
 }
 
 export type Progress =
@@ -113,6 +115,8 @@ export const api = {
     logout: () => call<{ ok: true }>("/api/train/logout", {}),
     enter: (handle: string, declaredKind?: Kind) => call<Session>("/api/train/enter", { handle, declaredKind }),
     retrain: () => call<TrainingSummary["model"]>("/api/train/retrain", {}),
+    label: (roundId: string, entryId: string, label: Kind) =>
+      call<{ handle: string; label: Kind; judgeCorrect: boolean }>("/api/train/label", { roundId, entryId, label }),
   },
 };
 

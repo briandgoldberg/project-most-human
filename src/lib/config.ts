@@ -11,10 +11,13 @@ export interface Cohort {
   /** Ground truth for the cohort's sessions. "ask" = each tester says which they are when they start. */
   label: Kind | "ask";
   password: string;
+  /** The owner can also say what players on the public board really were, and see those labels. Nobody else can. */
+  owner?: boolean;
 }
 
 /** Passwords that only work outside production, so local runs need no setup. */
 const DEV_COHORTS: Cohort[] = [
+  { id: "owner", label: "ask", password: "owner-dev", owner: true },
   { id: "trainers", label: "ask", password: "train-dev" },
   { id: "house-bots", label: "agent", password: "housebot-dev" },
 ];
@@ -31,9 +34,10 @@ function num(name: string, fallback: number): number {
 
 /**
  * Who may enter the training room:
- *   TRAINING_PASSWORD   you and your friends; each session declares human or agent
+ *   OWNER_PASSWORD      you alone; everything trainers can do, plus labelling the public board
+ *   TRAINING_PASSWORD   your friends; each session declares human or agent
  *   HOUSE_BOT_PASSWORD  the house bots; always labelled agent
- * or TRAINING_COHORTS, a JSON array of { id, label, password }, for finer groups.
+ * or TRAINING_COHORTS, a JSON array of { id, label, password, owner? }, for finer groups.
  */
 export function cohorts(): Cohort[] {
   const raw = env("TRAINING_COHORTS");
@@ -47,10 +51,19 @@ export function cohorts(): Cohort[] {
     return parsed;
   }
   const fromEnv: Cohort[] = [];
+  const owner = env("OWNER_PASSWORD");
   const trainers = env("TRAINING_PASSWORD");
   const bots = env("HOUSE_BOT_PASSWORD");
   if (trainers) fromEnv.push({ id: "trainers", label: "ask", password: trainers });
   if (bots) fromEnv.push({ id: "house-bots", label: "agent", password: bots });
+  if (owner) {
+    // If the owner password matched a shared one, everyone holding that one would become the owner.
+    if (owner === trainers || owner === bots) {
+      console.error("[config] OWNER_PASSWORD is the same as another password, so owner access is switched off.");
+    } else {
+      fromEnv.push({ id: "owner", label: "ask", password: owner, owner: true });
+    }
+  }
   if (fromEnv.length) return fromEnv;
   return process.env.NODE_ENV === "production" ? [] : DEV_COHORTS;
 }

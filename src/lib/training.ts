@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cohortForPassword, cohorts, config, type Cohort } from "./config";
-import { GameError } from "./game";
+import { GameError, boardForLabelling } from "./game";
 import { MIN_EXAMPLES_PER_CLASS, topWeights, trainModel, type BehaviorModel } from "./judge/model";
 import { readModelFile, readTraining, writeModelFile } from "./store";
 
@@ -77,6 +77,7 @@ function modelSummary(model: BehaviorModel | null) {
 
 export async function trainingSummary(cohort: Cohort) {
   const examples = await readTraining();
+  const owner = Boolean(cohort.owner);
   const count = (label: "human" | "agent") => {
     const of = examples.filter((e) => e.label === label);
     return { total: of.length, judgedRight: of.filter((e) => e.judgeCorrect).length };
@@ -85,6 +86,9 @@ export async function trainingSummary(cohort: Cohort) {
   const agent = count("agent");
   return {
     cohort: { id: cohort.id, label: cohort.label },
+    // Who on the public board is really what is for the owner's eyes only.
+    owner,
+    board: owner ? await boardForLabelling() : [],
     human,
     agent,
     neededPerKind: MIN_EXAMPLES_PER_CLASS,
@@ -92,6 +96,7 @@ export async function trainingSummary(cohort: Cohort) {
     model: modelSummary(await readModelFile<BehaviorModel>()),
     llmJudge: config().judge.llmEnabled,
     recent: examples
+      .filter((e) => owner || e.source !== "board")
       .slice(-40)
       .reverse()
       .map((e) => ({
@@ -99,6 +104,7 @@ export async function trainingSummary(cohort: Cohort) {
         at: e.recordedAt,
         handle: e.handle,
         truth: e.label,
+        fromBoard: e.source === "board",
         score: e.judge.score,
         judgeCorrect: e.judgeCorrect,
       })),

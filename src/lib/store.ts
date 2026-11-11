@@ -237,15 +237,22 @@ export async function appendTraining(example: TrainingExample): Promise<void> {
   await withLock("training", () => backend().append(`training/${example.roundId}`, example));
 }
 
+/** An entry labelled more than once (a correction) counts once, as its latest label. */
+function latestPerEntry<T extends { entryId: string }>(records: T[]): T[] {
+  const last = new Map<string, number>();
+  records.forEach((r, i) => last.set(r.entryId, i));
+  return records.filter((r, i) => last.get(r.entryId) === i);
+}
+
 /** Training examples, oldest first. `days` limits it to rounds from the last so many days. */
 export async function readTraining(days?: number): Promise<TrainingRecord[]> {
   const from = days ? new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10) : "";
-  return backend().readLog<TrainingRecord>(`training/${from}`, "training/~", "telemetry");
+  return latestPerEntry(await backend().readLog<TrainingRecord>(`training/${from}`, "training/~", "telemetry"));
 }
 
 /** The full training set including raw telemetry, for export and offline analysis. */
 export async function readTrainingFull(): Promise<TrainingExample[]> {
-  return backend().readLog<TrainingExample>("training/", "training/~");
+  return latestPerEntry(await backend().readLog<TrainingExample>("training/", "training/~"));
 }
 
 // ---------------------------------------------------------------------------

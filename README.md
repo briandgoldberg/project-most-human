@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 to play the competition in test mode (play tokens, no wallet). Open http://localhost:3000/train for the training room; the local password is `train-dev`.
+Open http://localhost:3000 to play the competition in test mode (play tokens, no wallet). Open http://localhost:3000/train for the training room; the local passwords are `train-dev` (a friend) and `owner-dev` (the owner).
 
 For the AI judge to read answers, put an Anthropic API key in `.env.local` (see `.env.example`). Without one the judge scores behaviour only.
 
@@ -50,6 +50,7 @@ The server cannot make telemetry truthful: a bot can send well-formed lies. That
 ## Training the judge
 
 - **Humans:** you and friends play sessions in `/train` and choose "Me, a human". Use different devices: phone sessions look very different from keyboard sessions.
+- **The public board:** when you know who a competition player really was, sign in to `/train` with the owner password and mark them human or agent. The judge had already scored them blind, so this adds a training example without changing their score, rank or the pool. Only the owner login can do this or see those labels; friends using the shared training password cannot.
 - **Agents:** point any agent at `/train` and choose "An AI agent", or run the house bots:
 
 ```bash
@@ -103,7 +104,7 @@ Devnet rehearsal: run `npm run solana:setup` (it will ask you to fund one wallet
 
 ## Going to production
 
-- **Passwords.** Set `TRAINING_PASSWORD` and `HOUSE_BOT_PASSWORD`. The dev passwords do not work in production.
+- **Passwords.** Set `OWNER_PASSWORD` (you), `TRAINING_PASSWORD` (friends) and `HOUSE_BOT_PASSWORD`. They must differ from each other. The dev passwords do not work in production.
 - **Storage.** Locally, data is kept in files under `data/`. Serverless hosts such as Vercel keep no files, so there the app stores everything in a Supabase Postgres database instead: set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and `STORE_SECRET`. Set up a new database by running `supabase/migrations/0001_store.sql` and registering the hash of your `STORE_SECRET` as the comment at the top of that file describes. The app reaches the database only through four functions that require the secret; the tables are not exposed.
 - **Scale.** A round is stored as one document that is rewritten on every answer. That is fine for hundreds of players a day; thousands will want entries split into their own rows.
 - **RPC.** The public Solana endpoints are rate-limited; use a paid RPC on mainnet.

@@ -117,10 +117,64 @@ test("the competition and the training room share a judge but nothing else", asy
   assert.ok(resumed.done && resumed.result.score === payerResult.score);
 });
 
+const OWNER = { id: "owner", label: "ask" as const, password: "owner-dev", owner: true };
+
+test("only the owner can say who a board player really was, and only the owner sees it", async () => {
+  const game = await import("../game");
+  const training = await import("../training");
+  const before = await game.roundSummary();
+  const board = await game.boardForLabelling();
+  const payer = board.find((r) => r.handle === "payer one")!;
+  assert.equal(payer.label, undefined);
+
+  // Unfinished players and training sessions can't be labelled this way.
+  const state = (await import("../store")).readRound(payer.roundId);
+  const entries = Object.values((await state)!.entries);
+  const sneaky = entries.find((e) => e.handle === "sneaky")!;
+  const trainee = entries.find((e) => !e.prizeEligible)!;
+  await assert.rejects(game.labelCompetitor({ roundId: payer.roundId, entryId: sneaky.id, label: "human", cohort: OWNER }), /hasn't been judged/);
+  await assert.rejects(game.labelCompetitor({ roundId: payer.roundId, entryId: trainee.id, label: "human", cohort: OWNER }), /isn't on the public board/);
+  await assert.rejects(game.labelCompetitor({ roundId: payer.roundId, entryId: payer.entryId, label: "robot", cohort: OWNER }), /human or agent/);
+
+  const out = await game.labelCompetitor({ roundId: payer.roundId, entryId: payer.entryId, label: "human", cohort: OWNER });
+  assert.equal(out.handle, "payer one");
+
+  // It is training data now, with the judge's original blind verdict and the raw telemetry.
+  const example = (await (await import("../store")).readTrainingFull()).find((e) => e.entryId === payer.entryId)!;
+  assert.equal(example.label, "human");
+  assert.equal(example.source, "board");
+  assert.equal(example.judge.score, payer.score);
+  assert.equal(Object.keys(example.telemetry).length, 5);
+
+  // Nothing public changed, and the player's own result shows no label.
+  assert.deepEqual(await game.roundSummary(), before);
+  assert.ok(!JSON.stringify(before).includes("label"));
+
+  // The owner sees the board and its labels. A friend with the training password sees neither.
+  const forOwner = await training.trainingSummary(OWNER);
+  assert.equal(forOwner.board.find((r) => r.entryId === payer.entryId)?.label, "human");
+  assert.ok(forOwner.recent.some((r) => r.handle === "payer one" && r.fromBoard));
+  const forFriend = await training.trainingSummary(TRAINERS);
+  assert.equal(forFriend.owner, false);
+  assert.deepEqual(forFriend.board, []);
+  assert.ok(!JSON.stringify(forFriend.recent).includes("payer one"));
+  // ...though it still counts toward the totals the model trains on.
+  assert.equal(forFriend.human.total, forOwner.human.total);
+
+  // Marking the same thing twice adds nothing; changing your mind replaces it.
+  await game.labelCompetitor({ roundId: payer.roundId, entryId: payer.entryId, label: "human", cohort: OWNER });
+  await game.labelCompetitor({ roundId: payer.roundId, entryId: payer.entryId, label: "agent", cohort: OWNER });
+  const records = (await (await import("../store")).readTraining()).filter((e) => e.entryId === payer.entryId);
+  assert.deepEqual(records.map((r) => r.label), ["agent"]);
+  await game.labelCompetitor({ roundId: payer.roundId, entryId: payer.entryId, label: "human", cohort: OWNER });
+});
+
 test("the training room opens only with a valid password or an unexpired pass", async () => {
   const training = await import("../training");
   assert.equal(training.checkPassword("train-dev", "1.1.1.1").id, "trainers");
   assert.equal(training.checkPassword("housebot-dev", "1.1.1.1").label, "agent");
+  assert.equal(training.checkPassword("owner-dev", "1.1.1.1").owner, true);
+  assert.equal(training.checkPassword("train-dev", "1.1.1.1").owner, undefined);
   assert.throws(() => training.checkPassword("guess", "1.1.1.1"), /isn't right/);
   assert.throws(() => training.requireCohort(undefined, undefined, "1.1.1.1"), /locked/);
 
@@ -136,7 +190,7 @@ test("the training room opens only with a valid password or an unexpired pass", 
   assert.throws(() => training.checkPassword("train-dev", "9.9.9.9"), /Too many/);
 
   const summary = await training.trainingSummary(TRAINERS);
-  assert.equal(summary.human.total, 1);
+  assert.equal(summary.human.total, 2); // one training session, one board player the owner vouched for
   assert.equal(summary.agent.total, 2);
   assert.equal(summary.canTrain, false);
   await assert.rejects(training.retrain(), /Need at least 5/);

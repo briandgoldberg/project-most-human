@@ -168,8 +168,10 @@ export interface Entry {
   payment: EntryPayment;
   /** Set for sessions played in the training room. */
   cohortId?: string;
-  /** Ground truth. Only present for training sessions. */
+  /** Ground truth, when known: declared up front in the training room, or added later for a competition entry. */
   label?: Kind;
+  /** Set when a trainer labelled this competition entry after the fact: the cohort that did it. */
+  labelledBy?: string;
   /** Training sessions get their own draw of questions instead of the day's set. */
   questions?: Question[];
   prizeEligible: boolean;
@@ -219,7 +221,10 @@ export interface TrainingExample {
   roundId: string;
   recordedAt: number;
   label: Kind;
+  /** The cohort that vouches for the label. */
   cohortId: string;
+  /** "session" = played in the training room; "board" = a competition entry labelled afterwards. */
+  source?: "session" | "board";
   handle: string;
   questions: Question[];
   answers: { questionId: string; text: string; serverLatencyMs: number; features: AnswerFeatures }[];
