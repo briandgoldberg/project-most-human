@@ -42,14 +42,17 @@ function Board({ summary }: { summary: HumanSummary }) {
 
 const short = (w: string) => `${w.slice(0, 4)}…${w.slice(-4)}`;
 
-/** What a player has won and not yet been sent, and where to send it. The address is kept with their account. */
+/**
+ * What a player has won and not yet been sent, and where to send it. Always
+ * there once they are in, so they know where to withdraw before they have won
+ * anything. The address is kept with their account.
+ */
 function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (me: Me) => void }) {
   const [editing, setEditing] = useState(false);
   const [wallet, setWallet] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const onChain = summary.paymentMode === "solana";
-  if (me.balance <= 0 && !me.wallet) return null;
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -67,40 +70,50 @@ function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (
   }
 
   return (
-    <div className="border border-line p-4">
-      <div className="text-[11px] tracking-widest text-dim uppercase">Your balance</div>
-      <div className="font-display text-3xl">
-        {fmt(me.balance)} {summary.symbol}
-      </div>
-      {onChain && me.wallet && !editing && (
-        <p className="mt-2 text-sm text-dim">
-          {me.balance > 0 ? "It will be sent to" : "Prizes are sent to"} <span className="text-paper">{short(me.wallet)}</span> when
-          prizes are next paid out.{" "}
-          <button type="button" className="underline underline-offset-4" onClick={() => setEditing(true)}>
-            Change address
-          </button>
-        </p>
-      )}
-      {onChain && (!me.wallet || editing) && (
-        <form onSubmit={save} className="mt-3 space-y-2">
-          <label htmlFor="withdraw-to" className="block text-sm text-dim">
-            To withdraw, say where to send it. No rush: your balance stays with your account.
-          </label>
-          <div className="flex gap-2">
+    <div className="space-y-2 text-sm">
+      <p className="text-dim">
+        Balance{" "}
+        <span className="text-paper tabular-nums">
+          {fmt(me.balance)} {summary.symbol}
+        </span>
+        {onChain && me.wallet && (
+          <>
+            {" "}
+            · goes to <span className="text-paper">{short(me.wallet)}</span> at the next payout
+          </>
+        )}
+        {onChain && !editing && (
+          <>
+            {" "}
+            <button type="button" className="text-xs underline underline-offset-4" onClick={() => setEditing(true)}>
+              {me.wallet ? "change address" : "withdraw"}
+            </button>
+          </>
+        )}
+      </p>
+      {onChain && editing && (
+        <form onSubmit={save} className="space-y-2">
+          <div className="flex max-w-xl gap-2">
             <input
               id="withdraw-to"
-              className="w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none"
+              aria-label="Solana address to withdraw to"
+              className="w-full border border-line bg-panel px-3 py-2 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none"
               value={wallet}
               onChange={(e) => setWallet(e.target.value)}
-              placeholder="your Solana address"
+              placeholder="Solana address to send your balance to"
               autoComplete="off"
               spellCheck={false}
+              autoFocus
               required
             />
             <button type="submit" disabled={busy} className="shrink-0 border border-line px-4 hover:border-paper disabled:opacity-40">
-              {busy ? "Saving…" : "Withdraw"}
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button type="button" className="shrink-0 px-1 text-xs text-dim underline underline-offset-4" onClick={() => setEditing(false)}>
+              cancel
             </button>
           </div>
+          <p className="text-xs text-dim">Saved with your account. Your balance, and anything you win later, is sent there at the next payout.</p>
           {error && (
             <p role="alert" className="text-sm text-pulse">
               {error}
