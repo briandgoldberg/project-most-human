@@ -91,9 +91,6 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
               Connect
             </button>
           </div>
-          {summary.cluster && summary.cluster !== "mainnet-beta" && (
-            <p className="mt-1 text-xs text-dim">Network: {summary.cluster}. This is a test coin with no value.</p>
-          )}
         </div>
       )}
 
@@ -122,12 +119,6 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
         </p>
       )}
 
-      <p className="max-w-xl text-xs text-dim">
-        While you answer, the game records your keystroke timing, edits, pointer movement, drawing strokes and browser
-        details, and the judge uses them along with your answers. By playing you agree these recordings and your answers
-        are kept; that your answers may be shown, without your handle, to other players as part of the game; and that
-        both may be used or shared for research into telling people from AI. Don&rsquo;t share anything private.
-      </p>
     </form>
   );
 }

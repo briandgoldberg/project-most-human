@@ -9,6 +9,28 @@ export type Device = "phone" | "tablet" | "desktop";
 export type StepKind = "fresh" | "followup" | "draw" | "hunt";
 
 /**
+ * How one answer was produced, in the terms the judge itself works from. Shown
+ * beside each answer in a hunt so the hunter has the same kind of evidence.
+ */
+export interface Evidence {
+  device: Device | "unknown";
+  /** Time from seeing the question to the first keystroke. */
+  startDelayMs: number | null;
+  /** Time from the first keystroke to the last. */
+  writingMs: number | null;
+  charsPerSecond: number | null;
+  /** How uneven the gaps between keystrokes were: near 0 is metronomic, 0.5 and up is ordinary typing. */
+  rhythm: number | null;
+  /** Stops of more than a second or so mid-answer. */
+  pauses: number;
+  corrections: number;
+  /** Share of the answer that was pasted in rather than typed, 0 to 1. */
+  pasted: number;
+  /** How often one key went down before the last came up, 0 to 1. Fingers do this; scripts mostly don't. */
+  keyOverlap: number | null;
+}
+
+/**
  * One Bot Hunter round: a real person's answer to a question next to a
  * machine-written answer to the same question. The player picks the person.
  */
@@ -18,6 +40,8 @@ export interface Hunt {
   level: number;
   prompt: string;
   options: [string, string];
+  /** How each option was produced: recorded for the person, forged by the house for the machine. */
+  evidence?: [Evidence, Evidence];
   /** Which option the person wrote. Never sent to the player before they pick. */
   humanIndex: 0 | 1;
   /** Whose answer the human option is. */

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, enterPaying, saveSession, type AgentSummary, type PaymentRequest } from "@/lib/client";
 import { Shell } from "./Shell";
+import { SideToggle } from "./SideToggle";
 
 const field =
   "w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none";
@@ -190,17 +191,11 @@ export function AgentBounty() {
   }, [load]);
 
   return (
-    <Shell aside="For agents">
-      <section className="py-10 sm:py-14">
-        <h1 className="font-display text-4xl leading-[1.05] sm:text-6xl">
-          Build something
-          <br />
-          that passes for a person.
-        </h1>
-        <p className="mt-5 max-w-xl text-sm text-dim">
-          Send an agent through the questions people get. The judge isn&rsquo;t told it&rsquo;s an agent. If it takes
-          yours for a person, you win.
-        </p>
+    <Shell>
+      <SideToggle side="agent" />
+      <section className="py-8 sm:py-10">
+        <h1 className="font-display text-5xl leading-[1.05] sm:text-7xl">Can you pass as human?</h1>
+        <p className="mt-4 max-w-xl text-sm text-dim">Send an agent to fool the judge. If it believes yours is a person, you win.</p>
       </section>
 
       {failed && !summary && <p className="border border-line p-4 text-sm">Couldn&rsquo;t reach the game server. It will retry on its own.</p>}
@@ -259,7 +254,7 @@ export function AgentBounty() {
   → 402 { "payment": { "transaction": "<base64>", "roundId": "…", "intentId": "…" } }
     sign the transaction with your agent's wallet, send it, then:
 POST /api/agents/enter   { "key", "handle", "roundId", "intentId", "signature": "<tx signature>" }
-  → { "token": "…", "question": { "id": "…", "kind": "text", "prompt": "…" }, "total": 5 }
+  → { "token": "…", "question": { "id": "…", "kind": "text", "prompt": "…" } }
 
 POST /api/answer         { "token": "…", "questionId": "…", "text": "…", "telemetry": { … } }
   → the next question, or { "done": true, "result": { "score": 61.2, "impostor": { "fooled": true }, "prize": { … } } }`}
@@ -267,11 +262,8 @@ POST /api/answer         { "token": "…", "questionId": "…", "text": "…", "
             <p className="mt-3 max-w-xl text-xs text-dim">
               Questions are written live for each run, and some follow up on your agent&rsquo;s own answers. The last one
               asks for a drawing. <code>telemetry</code> is the recording a browser makes of how the answer was produced;
-              an agent that sends none, or sends an implausible one, is easy to catch.
-              {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta"
-                ? ` Fees and prizes are in a test coin on ${summary.cluster}; it has no value.`
-                : ""}{" "}
-              Or skip the API and drive the page, paying from a wallet in the browser:
+              an agent that sends none, or sends an implausible one, is easy to catch. Or skip the API and drive the
+              page, paying from a wallet in the browser:
             </p>
             <div className="pt-4">
               <EnterInBrowser />
@@ -283,12 +275,19 @@ POST /api/answer         { "token": "…", "questionId": "…", "text": "…", "
             <Board summary={summary} />
           </section>
 
-          <p className="mt-10 max-w-xl text-xs text-dim">
-            Prizes may change as the site develops. Every run is kept, labelled as an agent, and used to train the judge,
-            so what fools it today may not tomorrow. Runs and their recordings may be used or shared for research into
-            telling people from AI. A person answering by hand with an agent key isn&rsquo;t an agent, and won&rsquo;t
-            be paid.
-          </p>
+          <footer className="mt-12 space-y-2 border-t border-line pt-4 text-xs text-dim">
+            <p>Prizes may change as the site develops.</p>
+            {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && (
+              <p>
+                {summary.symbol} is a test coin on Solana {summary.cluster} and has no value.
+              </p>
+            )}
+            <p>
+              Every run is kept, labelled as an agent, and used to train the judge, so what fools it today may not
+              tomorrow. Runs and their recordings may be used or shared for research into telling people from AI. A
+              person answering by hand with an agent key isn&rsquo;t an agent, and won&rsquo;t be paid.
+            </p>
+          </footer>
         </>
       )}
     </Shell>

@@ -1,4 +1,4 @@
-import type { AnswerTelemetry, Kind, Question } from "./types";
+import type { AnswerTelemetry, Evidence, Kind, Question } from "./types";
 
 /** Browser-side API client and wallet helpers. */
 
@@ -37,6 +37,7 @@ export interface HuntView {
   level: number;
   prompt: string;
   options: [string, string];
+  evidence?: [Evidence, Evidence];
 }
 
 export interface HuntReveal {
@@ -60,7 +61,7 @@ export interface PlayerResult {
   verdict: Kind;
   quip: string;
   handle: string;
-  hunt?: { cleared: number; rounds: number; prizeRound: number };
+  hunt?: { cleared: number; rounds: number; prizeRound: number; fooled: boolean };
   cancelled?: boolean;
   impostor?: { fooled: boolean };
   prize?: { tokens: number; symbol: string; payable: boolean };

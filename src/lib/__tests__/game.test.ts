@@ -124,7 +124,7 @@ test("a full game: questions and hunting interleaved, the ladder climbed, the pr
   assert.equal(session.total, 11);
   const { result, seen } = await play(game, session);
   assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3", "text", "text", "hunt4", "hunt5", "hunt6", "draw"]);
-  assert.deepEqual(result.hunt, { cleared: 6, rounds: 6, prizeRound: 6 });
+  assert.deepEqual(result.hunt, { cleared: 6, rounds: 6, prizeRound: 6, fooled: false });
   assert.deepEqual(result.prize, { tokens: 500, symbol: "PLAY", payable: true });
   assert.equal(result.cancelled, undefined);
 
@@ -132,6 +132,17 @@ test("a full game: questions and hunting interleaved, the ladder climbed, the pr
   const entry = await peek(session);
   assert.equal(new Set(entry.hunts!.map((h) => `${h.sourceEntryId}:${h.prompt}`)).size, 6);
   assert.deepEqual(entry.hunts!.map((h) => h.level), [1, 2, 2, 3, 3, 3]);
+  // Each answer comes with how it was produced: recorded for the person, forged for the machine.
+  const round1 = entry.hunts![0];
+  const [person, machine] = [round1.evidence![round1.humanIndex], round1.evidence![1 - round1.humanIndex]];
+  assert.equal(machine.pasted, 1, "the first decoy is plainly pasted in");
+  assert.equal(person.pasted, 0);
+  const real = entry.hunts!.find((h) => ANSWERS.includes(h.options[h.humanIndex]));
+  if (real) {
+    const e = real.evidence![real.humanIndex];
+    assert.deepEqual([e.device, e.pasted], ["desktop", 0]);
+    assert.ok(e.rhythm! > 0.3 && e.charsPerSecond! > 1 && e.startDelayMs! > 1000, "a real answer shows its real typing");
+  }
   for (const h of entry.hunts!) {
     const person = h.options[h.humanIndex];
     assert.ok(/^a real persons answer/.test(person) || ANSWERS.includes(person), `the marked answer should be a real one: ${person}`);
@@ -147,13 +158,15 @@ test("a full game: questions and hunting interleaved, the ladder climbed, the pr
   assert.deepEqual(await game.prizesOwed(), []);
 });
 
-test("one wrong pick ends the climb, and the rest of the game is the questions", async () => {
+test("one wrong pick ends the game there and then", async () => {
   const game = await import("../game");
   const session = await game.enter({ handle: "fooled at three" });
   const { result, seen } = await play(game, session, { hunt: (round, right) => (round === 3 ? ((1 - right) as 0 | 1) : right) });
-  assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3", "text", "text", "draw"]);
-  assert.deepEqual(result.hunt, { cleared: 2, rounds: 6, prizeRound: 6 });
+  assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3"]);
+  assert.deepEqual(result.hunt, { cleared: 2, rounds: 6, prizeRound: 6, fooled: true });
   assert.equal(result.prize, undefined);
+  // The judge still gives its read on the two answers there were.
+  assert.ok(result.score > 0 && result.cancelled === undefined);
 
   // Each pick, right or wrong, was kept as a judgement on a pair whose truth is known.
   const { readHuntRecords } = await import("../store");

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { ApiError, api, loadSession, type HuntReveal, type HuntView, type PlayerResult, type Progress } from "@/lib/client";
 import { Collector } from "@/lib/telemetry/collector";
-import type { AnswerTelemetry, Question, StrokePoint } from "@/lib/types";
+import type { AnswerTelemetry, Evidence, Question, StrokePoint } from "@/lib/types";
 import { Shell } from "./Shell";
 import { formatCountdown, useNow } from "./useNow";
 
@@ -192,6 +192,34 @@ function DrawQuestion({ question, onSubmit }: { question: Question; onSubmit: (s
 // Bot Hunter
 // ---------------------------------------------------------------------------
 
+const seconds = (ms: number | null) => (ms === null ? "–" : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`);
+const percent = (share: number | null) => (share === null ? "–" : `${Math.round(share * 100)}%`);
+
+/** How one answer was produced: the same kind of readings the judge works from. */
+function EvidenceList({ evidence }: { evidence: Evidence }) {
+  const rows: [string, string][] = [
+    ["Device", evidence.device === "unknown" ? "–" : evidence.device],
+    ["Started typing after", seconds(evidence.startDelayMs)],
+    ["Time spent writing", seconds(evidence.writingMs)],
+    ["Speed", evidence.charsPerSecond === null ? "–" : `${evidence.charsPerSecond} chars/s`],
+    ["Rhythm", evidence.rhythm === null ? "–" : evidence.rhythm.toFixed(2)],
+    ["Pauses", String(evidence.pauses)],
+    ["Corrections", String(evidence.corrections)],
+    ["Pasted", percent(evidence.pasted)],
+    ["Keys overlapping", percent(evidence.keyOverlap)],
+  ];
+  return (
+    <span className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 border-t border-line pt-3 text-xs">
+      {rows.map(([name, value]) => (
+        <span key={name} className="contents">
+          <span className="text-dim">{name}</span>
+          <span className="text-right tabular-nums">{value}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** Two answers to one question. One was typed by a person; the player picks which. */
 function HuntRound({
   hunt,
@@ -212,7 +240,7 @@ function HuntRound({
         {reveal
           ? reveal.correct
             ? "Right. That one was the person."
-            : "Wrong. The machine fooled you, and your climb ends here."
+            : "Wrong. The machine fooled you. Game over."
           : "One of these was typed by a person, the other written by a machine. Pick the person."}
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -234,11 +262,19 @@ function HuntRound({
                 {reveal && (isPerson ? " · a person" : " · the machine")}
                 {reveal && chosen && " · your pick"}
               </span>
-              <span className="break-words whitespace-pre-wrap">{hunt.options[i]}</span>
+              <span className="flex-1 break-words whitespace-pre-wrap">{hunt.options[i]}</span>
+              {hunt.evidence && <EvidenceList evidence={hunt.evidence[i]} />}
             </button>
           );
         })}
       </div>
+      {hunt.evidence && (
+        <p className="mt-3 text-xs text-dim">
+          Under each answer is how it was produced. Rhythm is how uneven the typing was: near 0 is metronomic, 0.5 and up
+          is ordinary. Keys overlapping is how often one key went down before the last came up. A machine can fake all
+          of it.
+        </p>
+      )}
     </div>
   );
 }
@@ -265,7 +301,9 @@ function Result({ result }: { result: PlayerResult }) {
         )}
         {hunt && !cancelled && (
           <p className="border border-line p-3">
-            You cleared hunting round {hunt.cleared} of {hunt.rounds}.{" "}
+            {hunt.fooled
+              ? `The machine fooled you in round ${hunt.cleared + 1}. Game over.`
+              : `You cleared ${hunt.cleared} hunting ${hunt.cleared === 1 ? "round" : "rounds"}.`}{" "}
             {prize ? null : <span className="text-dim">The prize is for reaching round {hunt.prizeRound}.</span>}
           </p>
         )}
@@ -388,9 +426,7 @@ export function Game() {
 
       {(view.phase === "question" || view.phase === "sending") && (
         <section className="py-10">
-          <div className="text-[11px] tracking-widest text-dim uppercase">
-            Step {view.index + 1} of {view.total} · prove you&rsquo;re human
-          </div>
+          <div className="text-[11px] tracking-widest text-dim uppercase">Prove you&rsquo;re human</div>
           <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.question.prompt}</h1>
 
           {view.phase === "question" &&
@@ -403,7 +439,7 @@ export function Game() {
           {view.phase === "sending" && !view.error && (
             <p className="flex items-center gap-2 py-8 text-sm text-dim" role="status">
               <span className="pulse-dot inline-block size-2 rounded-full bg-pulse" aria-hidden />
-              {view.index + 1 === view.total ? "The judge is making up its mind…" : "Noted. Setting up what comes next…"}
+              Noted…
             </p>
           )}
 
@@ -424,9 +460,7 @@ export function Game() {
 
       {(view.phase === "hunt" || view.phase === "reveal") && (
         <section className="py-10">
-          <div className="text-[11px] tracking-widest text-dim uppercase">
-            Step {view.index + 1} of {view.total} · bot hunter, round {view.hunt.round}
-          </div>
+          <div className="text-[11px] tracking-widest text-dim uppercase">Bot hunter · round {view.hunt.round}</div>
           <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.hunt.prompt}</h1>
 
           {view.phase === "hunt" ? (

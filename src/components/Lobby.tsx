@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, type HumanSummary } from "@/lib/client";
 import { EnterForm } from "./EnterForm";
 import { Shell } from "./Shell";
+import { SideToggle } from "./SideToggle";
 
 const REFRESH_MS = 15_000;
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -77,18 +77,11 @@ export function Lobby() {
   }, []);
 
   return (
-    <Shell aside="For humans">
-      <section className="py-10 sm:py-14">
-        <h1 className="font-display text-4xl leading-[1.05] sm:text-6xl">
-          Prove you&rsquo;re a person.
-          <br />
-          Then hunt the bots.
-        </h1>
-        <p className="mt-5 max-w-xl text-sm text-dim">
-          An AI asks you a few questions and decides whether you&rsquo;re human. In between, you do its job: two answers
-          to the same question, one from a real person and one from a machine. Pick the person. It gets harder every
-          round.
-        </p>
+    <Shell>
+      <SideToggle side="human" />
+      <section className="py-8 sm:py-10">
+        <h1 className="font-display text-5xl leading-[1.05] sm:text-7xl">Can you spot the bot?</h1>
+        <p className="mt-4 max-w-xl text-sm text-dim">Prove you&rsquo;re human. Then pick the real person. One mistake and you&rsquo;re out.</p>
       </section>
 
       {failed && !summary && <p className="border border-line p-4 text-sm">Couldn&rsquo;t reach the game server. It will retry on its own.</p>}
@@ -96,8 +89,8 @@ export function Lobby() {
       {summary && (
         <>
           <section className="flex gap-3 border-y border-line py-4">
-            <Stat label="Hunter prize" value={`${fmt(summary.prize)} ${summary.symbol}`} />
-            <Stat label="Reach round" value={summary.hunting ? String(summary.prizeRound) : "soon"} />
+            <Stat label="Prize" value={`${fmt(summary.prize)} ${summary.symbol}`} />
+            <Stat label="For reaching round" value={summary.hunting ? String(summary.prizeRound) : "soon"} />
             <Stat label="Winners this week" value={`${summary.winners} of ${summary.players}`} />
           </section>
 
@@ -112,30 +105,35 @@ export function Lobby() {
 
           <section className="mt-10 grid gap-6 border-t border-line pt-6 text-sm text-dim sm:grid-cols-3">
             <div>
-              <div className="mb-1 text-paper">1. Be human</div>
-              {summary.questionCount} questions, written for you as you go, some about what you just said. If the judge
-              takes you for a bot, your game is cancelled.
+              <div className="mb-1 text-paper">Be human</div>
+              An AI asks you questions and watches how you answer. If it takes you for a bot, you&rsquo;re out.
             </div>
             <div>
-              <div className="mb-1 text-paper">2. Hunt</div>
-              {summary.hunting
-                ? `Up to ${summary.huntRounds} rounds between the questions. Each machine answer is harder to spot than the last. One wrong pick ends your climb.`
-                : "Hunting rounds start once enough people have played to hunt with. Until then, it's the questions alone."}
+              <div className="mb-1 text-paper">Hunt</div>
+              Two answers to one question: a person&rsquo;s and a machine&rsquo;s. Pick the person. It gets harder each
+              round, and one wrong pick ends your game.
             </div>
             <div>
-              <div className="mb-1 text-paper">3. Win</div>
-              Clear round {summary.prizeRound} and the judge still believes you&rsquo;re human: {fmt(summary.prize)}{" "}
-              {summary.symbol}. Your own answers become what other players hunt with.
+              <div className="mb-1 text-paper">Win</div>
+              Reach round {summary.prizeRound} and win {fmt(summary.prize)} {summary.symbol}.
             </div>
           </section>
 
-          <p className="mt-8 text-xs text-dim">
-            Prizes may change as the site develops.{" "}
-            <Link href="/agents" className="text-paper underline underline-offset-4">
-              Building an agent? There&rsquo;s a prize for fooling the judge
-            </Link>
-            .
-          </p>
+          <footer className="mt-12 space-y-2 border-t border-line pt-4 text-xs text-dim">
+            <p>Prizes may change as the site develops.</p>
+            {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && (
+              <p>
+                {summary.symbol} is a test coin on Solana {summary.cluster} and has no value.
+              </p>
+            )}
+            <p>
+              While you play, the game records your keystroke timing, edits, pointer movement, drawing strokes and
+              browser details, and the judge uses them along with your answers. By playing you agree these recordings
+              and your answers are kept; that your answers and a summary of how you typed them may be shown, without
+              your handle, to other players as part of the game; and that both may be used or shared for research into
+              telling people from AI. Don&rsquo;t share anything private.
+            </p>
+          </footer>
         </>
       )}
     </Shell>

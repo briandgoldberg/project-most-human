@@ -8,15 +8,15 @@ import { MAX_ANSWER_CHARS, bankQuestionsFor } from "./questions";
 import { appendHuntRecord, appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
 import { aggregateFeatures, deviceOf, extractAnswerFeatures } from "./telemetry/features";
 import { sanitizeTelemetry } from "./telemetry/sanitize";
-import type { AgentKey, Entry, EntryPayment, Hunt, JudgeResult, Kind, PaymentIntent, Question, RoundState, StepKind } from "./types";
+import type { AgentKey, Entry, EntryPayment, Evidence, Hunt, JudgeResult, Kind, PaymentIntent, Question, RoundState, StepKind } from "./types";
 
 /**
  * The game has two sides and one judge, and it never closes.
  *
  *   The human side (/). A player answers questions that show they are a
  *   person, and in between hunts bots: picking the real person's answer out of
- *   a pair, round after round, until they miss. Clear enough rounds and they
- *   win the hunter prize. If the judge takes a player for a bot, their game is
+ *   a pair, round after round. A wrong pick ends their game. Clear enough
+ *   rounds and they win the hunter prize. If the judge takes a player for a bot, their game is
  *   cancelled: no board, no prize.
  *
  *   The bot side (/agents). Builders send agents, with a key and for a fee,
@@ -190,6 +190,8 @@ export interface HuntView {
   level: number;
   prompt: string;
   options: [string, string];
+  /** How each option was produced, in the same order. */
+  evidence?: [Evidence, Evidence];
 }
 
 /** What the player is facing now: a question to answer, or a pair to pick from. */
@@ -213,7 +215,7 @@ export interface Session extends Facing {
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const randomId = (bytes: number) => randomBytes(bytes).toString("base64url");
-const viewOf = ({ id, level, prompt, options }: Hunt, round: number): HuntView => ({ id, round, level, prompt, options });
+const viewOf = ({ id, level, prompt, options, evidence }: Hunt, round: number): HuntView => ({ id, round, level, prompt, options, evidence });
 
 function cleanHandle(raw: unknown): string {
   const handle = (typeof raw === "string" ? raw : "").trim().replace(/\s+/g, " ");
@@ -529,8 +531,8 @@ export interface PlayerResult {
   verdict: Kind;
   quip: string;
   handle: string;
-  /** Players: how far up the hunting ladder they got, and the round that wins the prize. */
-  hunt?: { cleared: number; rounds: number; prizeRound: number };
+  /** Players: how far up the hunting ladder they got, whether a miss ended it, and the round that wins the prize. */
+  hunt?: { cleared: number; rounds: number; prizeRound: number; fooled: boolean };
   /** Players: the judge took them for a bot, so the game doesn't count. */
   cancelled?: boolean;
   /** Agents: whether the judge took it for human. */
@@ -547,7 +549,12 @@ function playerResult(entry: Entry): PlayerResult {
   if (entry.agentKeyId) return { ...base, impostor: { fooled: result.score >= HUMAN_AT } };
   const hunted = (entry.hunts ?? []).length > 0 || (entry.plan ?? []).includes("hunt");
   const hunt = hunted
-    ? { cleared: huntScore(entry.hunts).cleared, rounds: HUNT_LEVELS.length, prizeRound: Math.min(cfg.hunterPrizeRound, HUNT_LEVELS.length) }
+    ? {
+        cleared: huntScore(entry.hunts).cleared,
+        rounds: HUNT_LEVELS.length,
+        prizeRound: Math.min(cfg.hunterPrizeRound, HUNT_LEVELS.length),
+        fooled: huntScore(entry.hunts).fell,
+      }
     : undefined;
   return { ...base, hunt, cancelled: entry.cancelled || undefined };
 }
@@ -715,8 +722,8 @@ export async function pickHunt(input: { token: unknown; huntId: unknown; pick: u
     hunt.pick = pick;
     hunt.correct = pick === hunt.humanIndex;
     hunt.answeredAt = now;
-    // A miss ends the climb: the rest of the game is the remaining questions.
-    if (!hunt.correct) entry.plan = planOf(state, entry).filter((kind, i) => i < stepOf(entry) || kind !== "hunt");
+    // A miss ends the game there and then. The judge still gives its read on what was answered.
+    if (!hunt.correct) entry.plan = planOf(state, entry).slice(0, stepOf(entry));
     const finished = stepOf(entry) >= planOf(state, entry).length;
     if (finished) entry.status = "scoring";
     return { finished, hunt: { ...hunt } };

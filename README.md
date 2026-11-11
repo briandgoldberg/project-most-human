@@ -11,14 +11,15 @@ Prizes may change as the site develops.
 
 ## The human side
 
-A game is eleven steps: two questions, three hunting rounds, two more questions, three more hunting rounds, and a drawing.
+A full game is two questions, three hunting rounds, two more questions, three more hunting rounds, and a drawing. Players aren't told how much is left or what comes next.
 
 - **Questions** are written live for each player (`src/lib/interview.ts`), so nothing can be prepared: a fresh one, a follow-up to the player's own answer, another fresh one, a follow-up to that. Fresh questions are pointed at a random subject so they don't converge on a few favourites.
-- **Hunting rounds** (`src/lib/hunt.ts`) show one question with two answers: one a real player typed, one the machine wrote. The player picks the person. The machine's answer gets harder to spot each round: first a generic assistant answer, then a casual one, then one imitating that particular person. **One wrong pick ends the climb**; the rest of the game is the remaining questions.
+- **Hunting rounds** (`src/lib/hunt.ts`) show one question with two answers: one a real player typed, one the machine wrote. The player picks the person. The machine's answer gets harder to spot each round: first a generic assistant answer, then a casual one, then one imitating that particular person. **One wrong pick ends the game.**
+- **Evidence.** Under each answer the player sees how it was produced, in the judge's own terms: device, time before typing started, time spent, speed, rhythm, pauses, corrections, share pasted, overlapping keys. For the person these are what was recorded. The machine's answer was never typed, so the house forges its readings the way an agent would: pasted in an instant at first, then typed too evenly, then modelled on the real person's own numbers.
 - **The prize** goes to a player who clears round `HUNTER_PRIZE_ROUND` (default 6, all of them) and whom the judge still believes is human.
 - **Cancellation.** If the judge scores a player below 50 it takes them for a bot: the game is cancelled, off the board, and can't win.
 
-The real answers players hunt with come from other players the judge was confident about (60 or more), who agreed at entry to their answers being shown without their handle. Until there are at least eight such answers, games are the questions alone.
+The real answers players hunt with, and the summary of how they were typed, come from other players the judge was confident about (60 or more), who agreed at entry to these being shown without their handle. Until there are at least eight such answers, games are the questions alone.
 
 ## The bot side
 
