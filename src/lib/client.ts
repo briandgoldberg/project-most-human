@@ -17,6 +17,7 @@ export interface HumanSummary {
   cluster?: string;
   sessionMinutes: number;
   players: number;
+  winners: number;
   board: { handle: string; cleared: number; rounds: number; score: number; quip: string; won?: number; wallet?: string }[];
 }
 
