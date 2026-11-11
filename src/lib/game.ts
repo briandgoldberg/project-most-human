@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config, type Cohort } from "./config";
 import { judgeEntry } from "./judge";
 import { llmWriteQuestions } from "./judge/llm";
-import { buildEntryTransaction, isValidAddress, solanaSetup, toRawAmount, verifyEntryPayment } from "./payments/solana";
+import { isValidAddress } from "./payments/address";
 import { MAX_ANSWER_CHARS, TEXT_QUESTIONS_PER_ROUND, bankQuestionsFor, drawQuestionFor } from "./questions";
 import { appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
 import { aggregateFeatures, extractAnswerFeatures } from "./telemetry/features";
@@ -32,6 +32,10 @@ export class GameError extends Error {
     super(message);
   }
 }
+
+// The Solana libraries are large and only needed when real fees are switched on,
+// so they are loaded on first use rather than with every request.
+const solana = () => import("./payments/solana");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const INTENT_TTL_MS = 20 * 60 * 1000;
@@ -276,6 +280,7 @@ export async function enter(input: EnterInput): Promise<Session> {
 
   if (!input.signature) {
     // Step 1: reserve the handle and hand back a transaction to sign.
+    const { solanaSetup, toRawAmount, buildEntryTransaction } = await solana();
     const { decimals } = await solanaSetup();
     const amountRaw = toRawAmount(cfg.entryFeeTokens, decimals);
     const roundId = roundIdFor();
@@ -338,6 +343,7 @@ export async function enter(input: EnterInput): Promise<Session> {
   }
   if (intent.usedByEntry) throw new GameError(409, "intent_used", "That payment request was already completed");
 
+  const { verifyEntryPayment } = await solana();
   const check = await verifyEntryPayment(signature, {
     wallet,
     memo: intent.memo,

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { PublicKey } from "@solana/web3.js";
 import { MEMO_PROGRAM_ID, checkPayment, toRawAmount, type ParsedTxLike, type PaymentExpectation } from "../payments/solana";
 import { bankQuestionsFor } from "../questions";
 import type { AnswerTelemetry, Question, TrainingExample } from "../types";
@@ -192,5 +193,24 @@ test("a payment is accepted only if it is the right amount, token, payer, recipi
   ];
   for (const [what, tx] of rejected) {
     assert.equal(checkPayment(tx, expectation).ok, false, `accepted a payment that was ${what}`);
+  }
+});
+
+test("wallet addresses are checked by shape, agreeing with the Solana library", async () => {
+  const { isValidAddress } = await import("../payments/address");
+  const library = (address: string) => {
+    try {
+      return new PublicKey(address).toBase58() === address;
+    } catch {
+      return false;
+    }
+  };
+  const good = [WALLET, TREASURY, MINT, "11111111111111111111111111111111", "So11111111111111111111111111111111111111112"];
+  const bad = ["", "nope", WALLET.slice(0, 20), WALLET + "1", WALLET.replace("4", "0"), "0x52908400098527886E0F7030069857D2E4169EE7"];
+  for (const address of good) assert.equal(isValidAddress(address), true, address);
+  for (const address of bad) assert.equal(isValidAddress(address), false, address);
+  // Including near-misses whose validity isn't obvious by eye.
+  for (const address of [...good, ...bad, WALLET.slice(1), WALLET.slice(2), "1" + WALLET, TREASURY.slice(0, -1)]) {
+    assert.equal(isValidAddress(address), library(address), address);
   }
 });

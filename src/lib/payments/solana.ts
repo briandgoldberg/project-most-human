@@ -22,14 +22,6 @@ import { config } from "../config";
 
 export const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 
-export function isValidAddress(address: string): boolean {
-  try {
-    return new PublicKey(address).toBase58() === address;
-  } catch {
-    return false;
-  }
-}
-
 export interface SolanaSetup {
   connection: Connection;
   mint: PublicKey;
@@ -188,6 +180,8 @@ export async function verifyEntryPayment(
     } catch (err) {
       // A malformed signature is the caller's mistake; anything else may be transient.
       if (/invalid|WrongSize|base58/i.test(String(err))) return { ok: false, reason: "Not a valid transaction signature" };
+      // Entry payments are built by this server in a format it can read. One it can't read is someone else's transaction.
+      if (/Transaction version/i.test(String(err))) return { ok: false, reason: "That transaction is not an entry payment" };
       if (Date.now() >= deadline) throw err;
     }
     if (tx) return checkPayment(tx, { ...expect, treasury: treasury.toBase58(), mint: mint.toBase58() });
