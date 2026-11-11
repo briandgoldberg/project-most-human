@@ -283,6 +283,12 @@ Questions come in kinds. "text": answer in words. The others are mini-games, ans
   "tap"   → "question.game.waits" lists how long each go waits before the light; reply with
             "telemetry": { "game": { "taps": [reaction ms per go], "early": 0 } }
   "hold"  → "question.game" gives "holdMs" and "tries"; reply with "telemetry": { "game": { "holds": [ms per try] } }
+  "aim"   → "question.game.targets" lists where each dot appears, as fractions of the play area; reply with
+            "telemetry": { "game": { "hits": [ms to reach each dot], "offsets": [0 = dead centre … 1 = its edge], "misses": 0 } }
+  "beat"  → "question.game" gives "beatMs", "pulses" shown and "beats" wanted; reply with
+            "telemetry": { "game": { "beatGaps": [ms between your taps: one fewer than "beats"] } }
+  "recall"→ "question.game.sequence" lists which of four pads (0-3) light, in order; reply with
+            "telemetry": { "game": { "picks": [pad per step], "pickGaps": [ms before each press] } }
 
 POST /api/agents/debrief { "token": "…", "explanation": "what the agent did to pass",
                            "answers": ["one per question, in order"], "code": "the source, or a link to it" }

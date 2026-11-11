@@ -29,6 +29,11 @@ export function sessionSecret(): string {
   return secret;
 }
 
+function payoutHour(value: string | undefined): number | undefined {
+  const hour = Number(value);
+  return value !== undefined && Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : undefined;
+}
+
 export type PaymentMode = "mock" | "solana";
 
 export function config() {
@@ -43,6 +48,8 @@ export function config() {
     /** What a player pays to play, in whole tokens. 0 = free. */
     entryFeeTokens: num("ENTRY_FEE_TOKENS", 0),
     tokenSymbol: env("TOKEN_SYMBOL") ?? (paymentMode === "mock" ? "PLAY" : "TOKEN"),
+    /** Which mini-games are in play, by kind (draw, tap, hold, aim, beat, recall). Empty = all of them. A way to bench one without a deploy. */
+    miniGames: (env("MINI_GAMES") ?? "").split(",").map((k) => k.trim()).filter(Boolean),
     /** "off" removes the Bot Hunter rounds from players' games. */
     hunting: (env("BOT_HUNTER") ?? "on") as "on" | "off",
     /**
@@ -72,6 +79,12 @@ export function config() {
     retrainEvery: num("RETRAIN_EVERY", 10),
     /** ...or sooner, once it has been fooled this many times since it was last trained. */
     retrainAfterLosses: num("RETRAIN_AFTER_LOSSES", 3),
+    /**
+     * The hour of the day, UTC (0 to 23), at which the scheduled payout run starts. Set it once that run exists
+     * (.github/workflows/payouts.yml) and players are told when their balance will be sent. Unset, prizes are paid
+     * by hand and no time is promised.
+     */
+    payoutHourUtc: payoutHour(env("PAYOUT_HOUR_UTC")),
     /** How long a player has to finish after entering. */
     sessionMinutes: num("SESSION_MINUTES", 30),
     questionSalt: env("QUESTION_SALT") ?? "",

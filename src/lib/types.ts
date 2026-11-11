@@ -4,9 +4,11 @@ export type Kind = "human" | "agent";
 /**
  * What a question asks for: typed words, a drawing, or a mini-game.
  * "tap": tap the moment a light comes on, several times. "hold": hold a button
- * down for a stated time with no clock to go by.
+ * down for a stated time with no clock to go by. "aim": hit dots as they appear.
+ * "beat": watch a light pulse, then tap the same beat back. "recall": watch
+ * four pads light in some order, then press them in that order.
  */
-export type QuestionKind = "text" | "draw" | "tap" | "hold";
+export type QuestionKind = "text" | "draw" | "tap" | "hold" | "aim" | "beat" | "recall";
 
 export type Device = "phone" | "tablet" | "desktop";
 
@@ -104,6 +106,17 @@ export interface GameSpec {
   /** Timing game: how long to hold for, in ms, and how many tries. */
   holdMs?: number;
   tries?: number;
+  /** Aim game: where each dot appears, as fractions of the play area's width and height; its radius in px; the wait before the next one, in ms. */
+  targets?: [number, number][];
+  radius?: number;
+  gapMs?: number;
+  /** Rhythm game: the gap between pulses in ms, how many pulses are shown, and how many taps are wanted back. */
+  beatMs?: number;
+  pulses?: number;
+  beats?: number;
+  /** Memory game: which of the four pads (0 to 3) light, in order, and how long each stays lit, in ms. */
+  sequence?: number[];
+  showMs?: number;
 }
 
 /** What the player did in a mini-game. */
@@ -114,6 +127,16 @@ export interface GamePlay {
   early?: number;
   /** Timing game: how long each hold lasted, in ms. */
   holds?: number[];
+  /** Aim game: per dot, ms from it appearing to being hit, and how far from its centre the hit landed (0 = dead centre, 1 = its edge). */
+  hits?: number[];
+  offsets?: number[];
+  /** Aim game: taps that landed outside the dot. */
+  misses?: number;
+  /** Rhythm game: the gaps between the player's taps, in ms. */
+  beatGaps?: number[];
+  /** Memory game: the pads pressed, in order, and the ms before each press (the first counted from the end of the showing). */
+  picks?: number[];
+  pickGaps?: number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +238,17 @@ export interface AnswerFeatures {
   /** Timing game: how far off the target the holds were on average (0.1 = 10%), and how much they varied. */
   holdError?: number | null;
   holdCv?: number | null;
+  /** Aim game: typical time to reach a dot, how much it varied, and how far off centre the hits landed on average (0 to 1). */
+  aimMedian?: number | null;
+  aimCv?: number | null;
+  aimOffset?: number | null;
+  /** Rhythm game: how far the gaps between taps were from the beat on average (0.1 = 10%), and how much they varied. */
+  beatError?: number | null;
+  beatCv?: number | null;
+  /** Memory game: the share of the sequence got right, the typical gap between presses, and how much it varied. */
+  recallRight?: number | null;
+  recallMedian?: number | null;
+  recallCv?: number | null;
 }
 
 /** Entry-level feature vector: what the behaviour model and the judge see. */

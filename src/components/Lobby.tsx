@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type HumanSummary, type Me } from "@/lib/client";
+import { nextPayout, untilPayout } from "@/lib/payouts";
 import { EnterForm } from "./EnterForm";
 import { GoogleSignIn } from "./GoogleSignIn";
 import { Shell } from "./Shell";
 import { SideToggle } from "./SideToggle";
+import { useNow } from "./useNow";
 
 const REFRESH_MS = 15_000;
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -53,7 +55,18 @@ function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (
   const [wallet, setWallet] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** An address was just saved: say when the balance will be sent. */
+  const [saved, setSaved] = useState(false);
+  const now = useNow();
   const onChain = summary.paymentMode === "solana";
+  // When the next payout is, in the player's own time, if payouts run on a schedule. Before the clock is known, in UTC.
+  const hour = summary.payoutHourUtc;
+  const when =
+    hour === undefined
+      ? null
+      : now === null
+        ? `around ${String(hour).padStart(2, "0")}:00 UTC`
+        : `around ${new Date(nextPayout(hour, now)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time, ${untilPayout(hour, now)}`;
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -62,6 +75,7 @@ function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (
     try {
       onMe(await api.saveWallet(wallet));
       setEditing(false);
+      setSaved(true);
       setWallet("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -80,13 +94,20 @@ function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (
         {onChain && me.wallet && (
           <>
             {" "}
-            · goes to <span className="text-paper">{short(me.wallet)}</span> at the next payout
+            · goes to <span className="text-paper">{short(me.wallet)}</span> {when ? `in the daily payout, ${when}` : "at the next payout"}
           </>
         )}
         {onChain && !editing && (
           <>
             {" "}
-            <button type="button" className="text-xs underline underline-offset-4" onClick={() => setEditing(true)}>
+            <button
+              type="button"
+              className="text-xs underline underline-offset-4"
+              onClick={() => {
+                setEditing(true);
+                setSaved(false);
+              }}
+            >
               {me.wallet ? "change address" : "withdraw"}
             </button>
           </>
@@ -114,13 +135,25 @@ function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (
               cancel
             </button>
           </div>
-          <p className="text-xs text-dim">Saved with your account. Your balance, and anything you win later, is sent there at the next payout.</p>
+          <p className="text-xs text-dim">
+            Saved with your account.{" "}
+            {when
+              ? `Payouts go out once a day. The next is ${when}: your balance, and anything you win later, is sent there then.`
+              : "Your balance, and anything you win later, is sent there at the next payout."}
+          </p>
           {error && (
             <p role="alert" className="text-sm text-pulse">
               {error}
             </p>
           )}
         </form>
+      )}
+      {onChain && saved && !editing && me.wallet && (
+        <p role="status" className="border-l-2 border-pulse pl-3 text-xs">
+          Address saved.{" "}
+          {me.balance > 0 ? `Your ${fmt(me.balance)} ${summary.symbol} will be sent` : "Anything you win will be sent"} to {short(me.wallet)}{" "}
+          {when ? `in the daily payout: the next is ${when}.` : "at the next payout."}
+        </p>
       )}
     </div>
   );

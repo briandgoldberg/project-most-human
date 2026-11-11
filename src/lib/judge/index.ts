@@ -11,7 +11,7 @@ const MAX_LESSONS = 4;
  * Bump this whenever the judging logic changes (rules, prompt, how scores are
  * blended), so verdicts in the data can be told apart by the judge that made them.
  */
-export const JUDGE_VERSION = "4";
+export const JUDGE_VERSION = "5";
 
 /**
  * Pick revealed cases to show the LLM judge: its recent mistakes first, then

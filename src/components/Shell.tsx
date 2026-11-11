@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Feedback } from "./Feedback";
 
 /** Page frame shared by the lobby and the game. */
 export function Shell({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
@@ -13,6 +14,8 @@ export function Shell({ children, aside }: { children: ReactNode; aside?: ReactN
         <div className="text-xs text-dim">{aside}</div>
       </header>
       <main className="flex-1">{children}</main>
+      {/* Signed-in players only, and not during a game. */}
+      <Feedback />
     </div>
   );
 }

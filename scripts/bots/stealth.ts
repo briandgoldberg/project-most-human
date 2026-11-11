@@ -4,7 +4,7 @@ import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import type { BotResult } from "../run-bots";
 import { SESSION_KEY, sendDebrief } from "./debrief";
-import { playGameOnPage } from "./games";
+import { GAMES_ON_PAGE, playGameOnPage, type PageGame } from "./games";
 import { chance, logNormal, pickOne, rand, randInt } from "./synth";
 
 /**
@@ -502,17 +502,16 @@ export async function runStealthBot(url: string, agentKey: string, index: number
       const next = await Promise.race([
         page.getByLabel("Your answer").waitFor().then(() => "text" as const),
         page.getByLabel("Drawing area").waitFor().then(() => "draw" as const),
-        page.getByLabel("Reaction pad").waitFor().then(() => "tap" as const),
-        page.getByLabel("Hold button").waitFor().then(() => "hold" as const),
+        ...(Object.keys(GAMES_ON_PAGE) as PageGame[]).map((game) => page.getByLabel(GAMES_ON_PAGE[game]).waitFor().then(() => game)),
         page.getByText("out of 100 human").waitFor().then(() => "result" as const),
       ]);
       if (next === "result") break;
       const prompt: string = (await page.getByRole("heading", { level: 1 }).textContent()) ?? "";
 
-      if (next === "tap" || next === "hold") {
+      if (next in GAMES_ON_PAGE) {
         // A mini-game: read what it wants, then play it the way a person would.
         await sleep(logNormal(1800, 0.4));
-        await playGameOnPage(page, next, "human");
+        await playGameOnPage(page, next as PageGame, "human");
         await page.getByRole("heading", { level: 1, name: prompt, exact: true }).waitFor({ state: "detached", timeout: 120_000 });
         continue;
       }

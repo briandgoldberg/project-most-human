@@ -1,0 +1,74 @@
+# Pays the prizes that are owed, once a day.
+#
+# The treasury's key lives here, as a repository secret, and nowhere near the
+# website. Set these under Settings > Secrets and variables > Actions:
+#
+#   Secrets    TREASURY_SECRET_KEY   the treasury wallet's private key (base58, or a JSON array)
+#              STORE_SECRET          the same value the website uses
+#              SOLANA_RPC_URL        a mainnet RPC URL with its key
+#   Variables  SOLANA_CLUSTER, TOKEN_MINT, TOKEN_SYMBOL, TREASURY_WALLET,
+#              SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY   the same values the website uses
+#              PAYOUT_CAP_TOKENS     the most one run may send (optional, recommended)
+#
+# The website tells players when this runs. Keep PAYOUT_HOUR_UTC there equal to
+# the hour in the schedule below.
+name: Daily payouts
+
+on:
+  schedule:
+    # 17:05 UTC every day. GitHub starts scheduled runs late when it is busy, so "around", not "at".
+    - cron: "5 17 * * *"
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Send the payments. Unticked, it only lists what is owed."
+        type: boolean
+        default: false
+
+# Never two runs at once: the second would pay what the first is still paying.
+concurrency:
+  group: payouts
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  pay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PAYMENT_MODE: solana
+      SOLANA_CLUSTER: ${{ vars.SOLANA_CLUSTER }}
+      TOKEN_MINT: ${{ vars.TOKEN_MINT }}
+      TOKEN_SYMBOL: ${{ vars.TOKEN_SYMBOL }}
+      TREASURY_WALLET: ${{ vars.TREASURY_WALLET }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      PAYOUT_CAP_TOKENS: ${{ vars.PAYOUT_CAP_TOKENS }}
+      STORE_SECRET: ${{ secrets.STORE_SECRET }}
+      SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+      TREASURY_SECRET_KEY: ${{ secrets.TREASURY_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check the settings are in place
+        run: |
+          missing=""
+          for name in SOLANA_CLUSTER TOKEN_MINT TREASURY_WALLET SUPABASE_URL SUPABASE_PUBLISHABLE_KEY STORE_SECRET SOLANA_RPC_URL TREASURY_SECRET_KEY; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set:$missing. Add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+      - name: List what is owed
+        if: github.event_name == 'workflow_dispatch' && !inputs.execute
+        run: npm run prizes
+      - name: Pay what is owed
+        if: github.event_name == 'schedule' || inputs.execute
+        run: npm run prizes -- --execute

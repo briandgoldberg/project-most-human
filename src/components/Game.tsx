@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from "react";
-import { ApiError, api, loadSession, type HuntReveal, type HuntView, type PlayerResult, type Progress } from "@/lib/client";
+import { ApiError, api, loadSession, type HuntView, type PlayerResult, type Progress } from "@/lib/client";
 import { Collector } from "@/lib/telemetry/collector";
 import type { AnswerTelemetry, Evidence, Question, StrokePoint } from "@/lib/types";
 import { Shell } from "./Shell";
@@ -25,11 +25,10 @@ type View =
   | { phase: "loading" }
   | { phase: "no-session" }
   /** `sentBack`: the last answer broke a rule of play and was returned, with why. `attempt` counts tries, to start each one clean. */
-  | ({ phase: "question"; question: Question; sentBack?: string; attempt?: number } & At)
+  /** `cleared`: the hunting round just got right, said once at the top of the step that follows it. */
+  | ({ phase: "question"; question: Question; sentBack?: string; attempt?: number; cleared?: number } & At)
   | ({ phase: "sending"; question: Question; pending: Submission; error?: string } & At)
-  | ({ phase: "hunt"; hunt: HuntView; picking?: 0 | 1; error?: string } & At)
-  /** A hunt just decided: show which answer was the person's before moving on to `next`. */
-  | ({ phase: "reveal"; hunt: HuntView; pick: 0 | 1; reveal: HuntReveal; next: Progress } & At)
+  | ({ phase: "hunt"; hunt: HuntView; picking?: 0 | 1; error?: string; cleared?: number } & At)
   | { phase: "result"; result: PlayerResult };
 
 const button = "bg-pulse px-5 py-2.5 text-ink transition-opacity disabled:opacity-40";
@@ -360,6 +359,285 @@ function HoldGame({ question, onSubmit }: { question: Question; onSubmit: (s: Su
   );
 }
 
+/**
+ * Aim game. Dots appear one at a time where the server put them; the player
+ * hits each. What is kept is how long each took to reach and how far off
+ * centre the hit landed: a hand is never dead centre twice.
+ */
+function AimGame({ question, onSubmit }: { question: Question; onSubmit: (s: Submission) => void }) {
+  const targets = useMemo(() => question.game?.targets ?? [], [question.game]);
+  const radius = question.game?.radius ?? 26;
+  const gapMs = question.game?.gapMs ?? 250;
+  const collector = useRef<Collector | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shownAt = useRef<number | null>(null);
+  const hits = useRef<number[]>([]);
+  const offsets = useRef<number[]>([]);
+  const misses = useRef(0);
+  const sent = useRef(false);
+  const [state, setState] = useState<"idle" | "waiting" | "dot" | "done">("idle");
+  const [dot, setDot] = useState(0);
+
+  useEffect(() => {
+    collector.current = new Collector().start();
+    return () => {
+      collector.current?.stop();
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  const show = () => {
+    setState("waiting");
+    timer.current = setTimeout(() => {
+      shownAt.current = performance.now();
+      setState("dot");
+    }, gapMs);
+  };
+
+  const press = (e: PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (state === "idle") return show();
+    if (state !== "dot" || shownAt.current === null) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const [fx, fy] = targets[dot];
+    const off = Math.hypot(e.clientX - rect.left - fx * rect.width, e.clientY - rect.top - fy * rect.height);
+    if (off > radius) {
+      misses.current++;
+      return;
+    }
+    hits.current.push(Math.round((performance.now() - shownAt.current) * 10) / 10);
+    offsets.current.push(Math.round((off / radius) * 1000) / 1000);
+    shownAt.current = null;
+    if (hits.current.length < targets.length) {
+      setDot(hits.current.length);
+      return show();
+    }
+    setState("done");
+    if (sent.current || !collector.current) return;
+    sent.current = true;
+    const game = { hits: hits.current, offsets: offsets.current, misses: misses.current };
+    onSubmit({ questionId: question.id, text: "", telemetry: { ...collector.current.finish(), game } });
+  };
+
+  return (
+    <div>
+      <div
+        aria-label="Aim area"
+        data-state={state}
+        onPointerDown={press}
+        onContextMenu={(e) => e.preventDefault()}
+        className="relative h-72 w-full touch-none overflow-hidden border border-line bg-panel select-none"
+        style={{ cursor: "crosshair" }}
+      >
+        {state === "idle" && <span className="absolute inset-0 flex items-center justify-center text-sm text-dim">Tap here to start</span>}
+        {state === "dot" && (
+          <span
+            data-dot
+            className="pointer-events-none absolute rounded-full bg-pulse"
+            style={{
+              left: `${targets[dot][0] * 100}%`,
+              top: `${targets[dot][1] * 100}%`,
+              width: radius * 2,
+              height: radius * 2,
+              transform: "translate(-50%, -50%)",
+            }}
+          />
+        )}
+      </div>
+      <p className="mt-3 text-center text-xs text-dim tabular-nums" role="status">
+        {state === "done" ? "Done" : `${Math.min(dot + 1, targets.length)} of ${targets.length}`}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Rhythm game. The pad pulses a few times at a pace the server chose, then the
+ * player taps that beat back from memory. People drift and wobble; a script's
+ * gaps are all the same.
+ */
+function BeatGame({ question, onSubmit }: { question: Question; onSubmit: (s: Submission) => void }) {
+  const beatMs = question.game?.beatMs ?? 600;
+  const pulses = question.game?.pulses ?? 4;
+  const beats = question.game?.beats ?? 6;
+  const collector = useRef<Collector | null>(null);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const lastTap = useRef<number | null>(null);
+  const gaps = useRef<number[]>([]);
+  const sent = useRef(false);
+  const [state, setState] = useState<"idle" | "showing" | "yours" | "done">("idle");
+  const [lit, setLit] = useState(false);
+  const [given, setGiven] = useState(0);
+
+  useEffect(() => {
+    collector.current = new Collector().start();
+    const pending = timers.current;
+    return () => {
+      collector.current?.stop();
+      pending.forEach(clearTimeout);
+    };
+  }, []);
+
+  const later = (fn: () => void, ms: number) => void timers.current.push(setTimeout(fn, ms));
+  const flash = (ms: number) => {
+    setLit(true);
+    later(() => setLit(false), ms);
+  };
+
+  const press = () => {
+    if (state === "idle") {
+      setState("showing");
+      for (let i = 0; i < pulses; i++) later(() => flash(Math.min(180, beatMs * 0.35)), i * beatMs);
+      // Their turn comes up halfway to where the next pulse would have been, so the beat can carry straight on.
+      return later(() => setState("yours"), (pulses - 1) * beatMs + beatMs * 0.5);
+    }
+    if (state !== "yours") return;
+    const now = performance.now();
+    // A bounce of the finger isn't a tap.
+    if (lastTap.current !== null && now - lastTap.current < 80) return;
+    flash(90);
+    if (lastTap.current !== null) gaps.current.push(Math.round((now - lastTap.current) * 10) / 10);
+    lastTap.current = now;
+    setGiven(gaps.current.length + 1);
+    if (gaps.current.length + 1 < beats) return;
+    setState("done");
+    if (sent.current || !collector.current) return;
+    sent.current = true;
+    onSubmit({ questionId: question.id, text: "", telemetry: { ...collector.current.finish(), game: { beatGaps: gaps.current } } });
+  };
+
+  const label = state === "idle" ? "Tap to start" : state === "showing" ? "Watch…" : state === "done" ? "Done" : given === 0 ? "Your turn" : `${given} of ${beats}`;
+  return (
+    <div className="flex flex-col items-center gap-4 py-4">
+      <button
+        type="button"
+        aria-label="Beat pad"
+        data-state={state}
+        data-lit={lit ? "1" : "0"}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          press();
+        }}
+        onKeyDown={(e) => {
+          if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+            e.preventDefault();
+            press();
+          }
+        }}
+        onContextMenu={(e) => e.preventDefault()}
+        disabled={state === "done"}
+        className={`${pad} size-44 ${lit ? "border-pulse bg-pulse text-ink" : state === "yours" ? "border-paper bg-panel text-paper" : "border-line bg-panel text-dim"}`}
+      >
+        {label}
+      </button>
+      <p className="text-xs text-dim" role="status">
+        {state === "yours" || state === "done" ? `${beats} taps, at the pace you just saw` : `${pulses} pulses, then your turn`}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Memory game. Four pads light in an order the server chose; the player
+ * presses them back. What is kept is the order pressed and the pace of it.
+ */
+function RecallGame({ question, onSubmit }: { question: Question; onSubmit: (s: Submission) => void }) {
+  const sequence = useMemo(() => question.game?.sequence ?? [], [question.game]);
+  const showMs = question.game?.showMs ?? 560;
+  const collector = useRef<Collector | null>(null);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const last = useRef<number | null>(null);
+  const picks = useRef<number[]>([]);
+  const gaps = useRef<number[]>([]);
+  const sent = useRef(false);
+  const [state, setState] = useState<"idle" | "showing" | "yours" | "done">("idle");
+  const [lit, setLit] = useState<number | null>(null);
+  const [pressed, setPressed] = useState(0);
+  const [right, setRight] = useState(0);
+
+  useEffect(() => {
+    collector.current = new Collector().start();
+    const pending = timers.current;
+    return () => {
+      collector.current?.stop();
+      pending.forEach(clearTimeout);
+    };
+  }, []);
+
+  const later = (fn: () => void, ms: number) => void timers.current.push(setTimeout(fn, ms));
+
+  /** `now`: when the press happened, on the same clock as performance.now(). */
+  const press = (padIndex: number, now: number) => {
+    if (state === "idle") {
+      setState("showing");
+      sequence.forEach((step, i) => {
+        later(() => setLit(step), i * showMs);
+        later(() => setLit(null), i * showMs + showMs * 0.7);
+      });
+      return later(() => {
+        last.current = performance.now();
+        setState("yours");
+      }, sequence.length * showMs);
+    }
+    if (state !== "yours" || last.current === null) return;
+    // A bounce of the finger isn't a press.
+    if (picks.current.length && now - last.current < 60) return;
+    picks.current.push(padIndex);
+    gaps.current.push(Math.round((now - last.current) * 10) / 10);
+    last.current = now;
+    setLit(padIndex);
+    later(() => setLit((l) => (l === padIndex ? null : l)), 160);
+    setPressed(picks.current.length);
+    if (picks.current.length < sequence.length) return;
+    setState("done");
+    setRight(sequence.filter((step, i) => picks.current[i] === step).length);
+    if (sent.current || !collector.current) return;
+    sent.current = true;
+    const telemetry = { ...collector.current.finish(), game: { picks: picks.current, pickGaps: gaps.current } };
+    // A moment to read how it went before moving on.
+    setTimeout(() => onSubmit({ questionId: question.id, text: "", telemetry }), 900);
+  };
+
+  const status =
+    state === "idle"
+      ? "Tap any pad to start"
+      : state === "showing"
+        ? "Watch…"
+        : state === "yours"
+          ? `Your turn: ${pressed} of ${sequence.length}`
+          : `${right} of ${sequence.length} right`;
+  return (
+    <div className="flex flex-col items-center gap-4 py-4">
+      <div aria-label="Memory pads" data-state={state} className="grid grid-cols-2 gap-3">
+        {[0, 1, 2, 3].map((i) => (
+          <button
+            key={i}
+            type="button"
+            aria-label={`Pad ${i + 1}`}
+            data-lit={lit === i ? "1" : "0"}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              press(i, e.timeStamp);
+            }}
+            onKeyDown={(e) => {
+              if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+                e.preventDefault();
+                press(i, e.timeStamp);
+              }
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+            disabled={state === "done"}
+            className={`size-24 touch-none rounded-lg border-2 transition-colors select-none sm:size-28 ${lit === i ? "border-pulse bg-pulse" : "border-line bg-panel"}`}
+          />
+        ))}
+      </div>
+      <p className="text-xs text-dim tabular-nums" role="status">
+        {status}
+      </p>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Bot Hunter
 // ---------------------------------------------------------------------------
@@ -406,7 +684,7 @@ function EvidenceList({ evidence: e }: { evidence: Evidence }) {
     ...(known(e.totalMs) ? ([["Start to finish", seconds(e.totalMs)]] as [string, string][]) : []),
   ];
   return (
-    <span className="mt-4 block border-t border-line pt-3 text-xs">
+    <span className="mt-3 block pb-2 text-xs">
       <span className="mb-3 block">
         <span className="mb-1 block text-dim">Keystroke by keystroke</span>
         {e.gaps?.length ? (
@@ -433,30 +711,28 @@ const MAX_REASON = 300;
 /**
  * Two answers to one question. One was typed by a person; the player picks
  * which, and says what gave the other away. Once the decoys stop being
- * obvious, the explanation is required.
+ * obvious, the explanation is required. How each answer was produced is there
+ * for whoever wants it, folded away until asked for.
  */
 function HuntRound({
   hunt,
   busy,
-  reveal,
-  pick,
   onPick,
 }: {
   hunt: HuntView;
   busy?: boolean;
-  reveal?: HuntReveal;
-  pick?: 0 | 1;
-  onPick?: (choice: 0 | 1, reason: string, telemetry: AnswerTelemetry) => void;
+  onPick: (choice: 0 | 1, reason: string, telemetry: AnswerTelemetry) => void;
 }) {
   const [selected, setSelected] = useState<0 | 1 | null>(null);
   const [reason, setReason] = useState("");
+  // One switch for both answers: the readings are for comparing side by side.
+  const [showEvidence, setShowEvidence] = useState(false);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const collector = useRef<Collector | null>(null);
   const needsReason = hunt.level >= 2;
-  const chosen = reveal ? pick : selected;
 
   // The explanation is typed, so it is recorded like any other answer.
-  const choosing = selected !== null && !reveal;
+  const choosing = selected !== null;
   useEffect(() => {
     if (!choosing) return;
     const c = new Collector().start();
@@ -470,51 +746,55 @@ function HuntRound({
 
   const ready = selected !== null && (!needsReason || reason.trim().length >= MIN_REASON);
   const lockIn = () => {
-    if (!ready || selected === null || !collector.current || !onPick) return;
+    if (!ready || selected === null || !collector.current) return;
     onPick(selected, reason.trim(), collector.current.finish());
   };
 
   return (
     <div>
-      <p className="mb-4 text-sm text-dim">
-        {reveal
-          ? reveal.correct
-            ? "Right. That one was the person."
-            : "Wrong. The machine fooled you. Game over."
-          : "One of these was typed by a person, the other written by a machine. Pick the person."}
-      </p>
-      {!reveal && (
-        <p className="-mt-2 mb-4 text-xs text-dim">
-          Under each answer is how it was produced. The bars are the pause before each keystroke: taller is longer, orange is a
-          second or more. Keys overlapping is fingers rolling from one key to the next. The machine&rsquo;s readings are
-          forged, and the forgery improves each round.
-        </p>
-      )}
+      <p className="mb-4 text-sm text-dim">One of these was typed by a person, the other written by a machine. Pick the person.</p>
+      {/* Each card is two rows of the same grid, so the answers line up with each other and so do the readings under them. */}
       <div className="grid gap-3 sm:grid-cols-2">
-        {([0, 1] as const).map((i) => {
-          const isPerson = reveal?.humanIndex === i;
-          const edge = reveal ? (isPerson ? "border-pulse" : "border-line opacity-60") : chosen === i ? "border-pulse" : "border-line hover:border-paper";
-          return (
+        {([0, 1] as const).map((i) => (
+          <div
+            key={i}
+            className={`row-span-2 grid grid-rows-subgrid gap-y-0 border bg-panel transition-colors ${selected === i ? "border-pulse" : "border-line hover:border-paper"}`}
+          >
             <button
-              key={i}
               type="button"
-              disabled={!onPick || busy}
+              disabled={busy}
               onClick={() => setSelected(i)}
               aria-label={`Answer ${i === 0 ? "A" : "B"}`}
-              aria-pressed={chosen === i}
-              className={`flex min-h-36 flex-col border bg-panel p-4 text-left transition-colors disabled:cursor-default ${edge}`}
+              aria-pressed={selected === i}
+              className="flex min-h-36 flex-col p-4 text-left disabled:cursor-default"
             >
               <span className="mb-2 text-[11px] tracking-widest text-dim uppercase">
                 {i === 0 ? "A" : "B"}
-                {reveal && (isPerson ? " · a person" : " · the machine")}
-                {chosen === i && (reveal ? " · your pick" : " · your pick for the person")}
+                {selected === i && " · your pick for the person"}
               </span>
               <span className="flex-1 break-words whitespace-pre-wrap">{hunt.options[i]}</span>
-              {hunt.evidence && <EvidenceList evidence={hunt.evidence[i]} />}
             </button>
-          );
-        })}
+            {hunt.evidence && (
+              <details open={showEvidence} onToggle={(e) => setShowEvidence(e.currentTarget.open)} className="border-t border-line px-4">
+                <summary className="flex cursor-pointer list-none items-center gap-2 py-2.5 text-xs text-dim hover:text-paper [&::-webkit-details-marker]:hidden">
+                  <span aria-hidden className={`inline-block transition-transform ${showEvidence ? "rotate-90" : ""}`}>
+                    ▸
+                  </span>
+                  How it was typed
+                </summary>
+                <EvidenceList evidence={hunt.evidence[i]} />
+              </details>
+            )}
+          </div>
+        ))}
       </div>
+      {hunt.evidence && showEvidence && (
+        <p className="mt-3 text-xs text-dim">
+          The bars are the pause before each keystroke: taller is longer, orange is a second or more. Keys overlapping is
+          fingers rolling from one key to the next. The machine&rsquo;s readings are forged, and the forgery improves each
+          round.
+        </p>
+      )}
 
       {choosing && (
         <div className="mt-5">
@@ -540,7 +820,6 @@ function HuntRound({
           </button>
         </div>
       )}
-
     </div>
   );
 }
@@ -725,7 +1004,7 @@ function Result({ result, token, onResult }: { result: PlayerResult; token?: str
       {debrief && !debrief.done && token && <Debrief questions={debrief.questions} token={token} onDone={onResult} />}
 
       <Link href={impostor ? "/agents" : "/"} className={`${ghost} mt-8 inline-block`}>
-        {impostor ? "Back to the agents' side" : "Play again"}
+        {impostor ? "Back to the agents' side" : "Back home"}
       </Link>
     </section>
   );
@@ -735,11 +1014,11 @@ function Result({ result, token, onResult }: { result: PlayerResult; token?: str
 // Game
 // ---------------------------------------------------------------------------
 
-function fromProgress(p: Progress): View {
+function fromProgress(p: Progress, cleared?: number): View {
   if (p.done) return { phase: "result", result: p.result };
   const at = { index: p.index, total: p.total };
-  if (p.hunt) return { phase: "hunt", hunt: p.hunt, ...at };
-  return { phase: "question", question: p.question!, ...at };
+  if (p.hunt) return { phase: "hunt", hunt: p.hunt, cleared, ...at };
+  return { phase: "question", question: p.question!, cleared, ...at };
 }
 
 export function Game() {
@@ -798,9 +1077,9 @@ export function Game() {
       if (!session) return;
       setView({ ...at, phase: "hunt", picking: choice, error: undefined });
       try {
+        // Straight on to whatever comes next. A right pick is said in passing there; a wrong one ends the game, and the result says so.
         const next = await api.hunt(session.token, at.hunt.id, choice, reason, telemetry);
-        if (next.lastHunt) setView({ ...at, phase: "reveal", pick: choice, reveal: next.lastHunt, next });
-        else setView(fromProgress(next));
+        setView(fromProgress(next, next.lastHunt?.correct ? at.hunt.round : undefined));
       } catch (err) {
         if (err instanceof ApiError && (err.code === "wrong_hunt" || err.code === "already_finished")) {
           setView(fromProgress(await api.session(session.token)));
@@ -812,7 +1091,12 @@ export function Game() {
     [session],
   );
 
-  const inPlay = view.phase === "question" || view.phase === "sending" || view.phase === "hunt" || view.phase === "reveal";
+  const inPlay = view.phase === "question" || view.phase === "sending" || view.phase === "hunt";
+  const cleared = (view.phase === "question" || view.phase === "hunt") && view.cleared !== undefined && (
+    <p role="status" className="mb-5 border-l-2 border-pulse pl-3 text-sm">
+      Right: that one was the person. Round {view.cleared} cleared.
+    </p>
+  );
   const timeLeft = session && now !== null ? session.expiresAt - now : null;
   const aside = inPlay ? `${session?.handle ?? ""}${timeLeft !== null ? ` · ${formatCountdown(timeLeft)}` : ""}` : session?.handle;
 
@@ -831,6 +1115,7 @@ export function Game() {
 
       {(view.phase === "question" || view.phase === "sending") && (
         <section className="py-10">
+          {cleared}
           <div className="text-[11px] tracking-widest text-dim uppercase">
             {view.question.kind === "text" ? "Prove you\u2019re human" : "Mini-game"}
           </div>
@@ -855,6 +1140,9 @@ export function Game() {
               if (view.question.kind === "draw") return <DrawQuestion key={key} {...props} />;
               if (view.question.kind === "tap") return <TapGame key={key} {...props} />;
               if (view.question.kind === "hold") return <HoldGame key={key} {...props} />;
+              if (view.question.kind === "aim") return <AimGame key={key} {...props} />;
+              if (view.question.kind === "beat") return <BeatGame key={key} {...props} />;
+              if (view.question.kind === "recall") return <RecallGame key={key} {...props} />;
               return <TextQuestion key={key} {...props} />;
             })()}
 
@@ -880,28 +1168,20 @@ export function Game() {
         </section>
       )}
 
-      {(view.phase === "hunt" || view.phase === "reveal") && (
+      {view.phase === "hunt" && (
         <section className="py-10">
+          {cleared}
           <div className="text-[11px] tracking-widest text-dim uppercase">Bot hunter · round {view.hunt.round}</div>
           <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.hunt.prompt}</h1>
 
-          {view.phase === "hunt" ? (
-            <HuntRound
-              key={view.hunt.id}
-              hunt={view.hunt}
-              busy={view.picking !== undefined}
-              onPick={(choice, reason, telemetry) => pick(view, choice, reason, telemetry)}
-            />
-          ) : (
-            <>
-              <HuntRound hunt={view.hunt} reveal={view.reveal} pick={view.pick} />
-              <button type="button" onClick={() => setView(fromProgress(view.next))} className={`${button} mt-6`} autoFocus>
-                {view.next.done ? "See how you did" : "Carry on"}
-              </button>
-            </>
-          )}
+          <HuntRound
+            key={view.hunt.id}
+            hunt={view.hunt}
+            busy={view.picking !== undefined}
+            onPick={(choice, reason, telemetry) => pick(view, choice, reason, telemetry)}
+          />
 
-          {view.phase === "hunt" && view.error && (
+          {view.error && (
             <p role="alert" className="mt-4 text-sm text-pulse">
               {view.error}
             </p>

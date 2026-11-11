@@ -127,15 +127,32 @@ export function pathStats(points: PointerEv[], gapMs = 120): PathStats {
 
 export function extractAnswerFeatures(kind: QuestionKind, text: string, raw: AnswerTelemetry, spec?: GameSpec): AnswerFeatures {
   // --- Mini-games -----------------------------------------------------------
-  const taps = kind === "tap" ? (raw.game?.taps ?? []) : [];
-  const holds = kind === "hold" ? (raw.game?.holds ?? []) : [];
+  const play = raw.game ?? {};
+  const taps = kind === "tap" ? (play.taps ?? []) : [];
+  const holds = kind === "hold" ? (play.holds ?? []) : [];
   const target = spec?.holdMs ?? 0;
+  const hits = kind === "aim" ? (play.hits ?? []) : [];
+  const offsets = kind === "aim" ? (play.offsets ?? []) : [];
+  const beats = kind === "beat" ? (play.beatGaps ?? []) : [];
+  const beat = spec?.beatMs ?? 0;
+  const picks = kind === "recall" ? (play.picks ?? []) : [];
+  const sequence = spec?.sequence ?? [];
+  // The first press comes after however long they took to get going; the pace is in the ones after it.
+  const pace = kind === "recall" ? (play.pickGaps ?? []).slice(1) : [];
   const game = {
     tapMedian: round(median(taps), 1),
     tapCv: taps.length >= 3 ? round(cv(taps)) : null,
-    tapEarly: kind === "tap" ? (raw.game?.early ?? 0) : 0,
+    tapEarly: kind === "tap" ? (play.early ?? 0) : 0,
     holdError: holds.length && target > 0 ? round(mean(holds.map((h) => Math.abs(h - target) / target))) : null,
     holdCv: holds.length >= 2 ? round(cv(holds)) : null,
+    aimMedian: round(median(hits), 1),
+    aimCv: hits.length >= 3 ? round(cv(hits)) : null,
+    aimOffset: round(mean(offsets)),
+    beatError: beats.length && beat > 0 ? round(mean(beats.map((b) => Math.abs(b - beat) / beat))) : null,
+    beatCv: beats.length >= 2 ? round(cv(beats)) : null,
+    recallRight: picks.length && sequence.length ? round(sequence.filter((pad, i) => picks[i] === pad).length / sequence.length) : null,
+    recallMedian: round(median(pace), 1),
+    recallCv: pace.length >= 3 ? round(cv(pace)) : null,
   };
 
   const inputs = raw.inputs ?? [];
@@ -333,6 +350,14 @@ export const FEATURE_KEYS = [
   "tapEarly",
   "holdError",
   "holdCv",
+  "aimMedian",
+  "aimCv",
+  "aimOffset",
+  "beatError",
+  "beatCv",
+  "recallRight",
+  "recallMedian",
+  "recallCv",
   "ansLenMean",
   "ansLenCv",
   "formalRatio",
@@ -420,6 +445,14 @@ export function aggregateFeatures(answers: AnswerForAggregation[], env?: ClientE
     tapEarly: all.some((x) => x.kind === "tap") ? sum((x) => x.tapEarly ?? 0, all) : null,
     holdError: avg((x) => x.holdError ?? null, all),
     holdCv: avg((x) => x.holdCv ?? null, all),
+    aimMedian: avg((x) => x.aimMedian ?? null, all),
+    aimCv: avg((x) => x.aimCv ?? null, all),
+    aimOffset: avg((x) => x.aimOffset ?? null, all),
+    beatError: avg((x) => x.beatError ?? null, all),
+    beatCv: avg((x) => x.beatCv ?? null, all),
+    recallRight: avg((x) => x.recallRight ?? null, all),
+    recallMedian: avg((x) => x.recallMedian ?? null, all),
+    recallCv: avg((x) => x.recallCv ?? null, all),
     ansLenMean: mean(lens),
     ansLenCv: lens.length >= 3 ? cv(lens) : null,
     formalRatio: texts.length ? formal / texts.length : null,

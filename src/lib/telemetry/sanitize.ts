@@ -54,12 +54,22 @@ const MAX_GAME_MS = 60_000;
 function sanitizeGame(value: unknown): GamePlay | undefined {
   if (!value || typeof value !== "object") return undefined;
   const g = value as Record<string, unknown>;
-  const times = (x: unknown): number[] | undefined =>
-    Array.isArray(x) ? x.slice(0, GAME_LIMIT).filter((t): t is number => isNum(t) && t >= 0 && t <= MAX_GAME_MS).map((t) => Math.round(t * 10) / 10) : undefined;
-  const taps = times(g.taps);
-  const holds = times(g.holds);
-  if (!taps && !holds) return undefined;
-  return { taps, holds, early: isNum(g.early) ? Math.max(0, Math.min(50, Math.round(g.early))) : 0 };
+  const list = (x: unknown, max: number, places: number): number[] | undefined =>
+    Array.isArray(x) ? x.slice(0, GAME_LIMIT).filter((t): t is number => isNum(t) && t >= 0 && t <= max).map((t) => Math.round(t * places) / places) : undefined;
+  const times = (x: unknown) => list(x, MAX_GAME_MS, 10);
+  const count = (x: unknown) => (isNum(x) ? Math.max(0, Math.min(50, Math.round(x))) : 0);
+  const play: GamePlay = {
+    taps: times(g.taps),
+    holds: times(g.holds),
+    hits: times(g.hits),
+    // How far from a dot's centre, in dot radii: anything past the edge wasn't a hit.
+    offsets: list(g.offsets, 1.5, 1000),
+    beatGaps: times(g.beatGaps),
+    picks: list(g.picks, 3, 1),
+    pickGaps: times(g.pickGaps),
+  };
+  if (!Object.values(play).some(Boolean)) return undefined;
+  return { ...play, early: count(g.early), misses: play.hits ? count(g.misses) : undefined };
 }
 
 export function sanitizeTelemetry(value: unknown): AnswerTelemetry {

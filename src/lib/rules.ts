@@ -56,6 +56,18 @@ export function checkGame(question: Pick<Question, "kind" | "game">, play: GameP
     const tries = question.game?.tries ?? 0;
     if (!play?.holds || play.holds.length !== tries || play.holds.some((h) => h < 50)) return "Finish the game first: every try needs a hold.";
   }
+  if (question.kind === "aim") {
+    const dots = question.game?.targets?.length ?? 0;
+    if (!play?.hits || play.hits.length !== dots || play.offsets?.length !== dots) return "Finish the game first: hit every dot.";
+  }
+  if (question.kind === "beat") {
+    const gaps = Math.max(0, (question.game?.beats ?? 0) - 1);
+    if (!play?.beatGaps || play.beatGaps.length !== gaps || play.beatGaps.some((g) => g < 50)) return "Finish the game first: tap the whole beat back.";
+  }
+  if (question.kind === "recall") {
+    const length = question.game?.sequence?.length ?? 0;
+    if (!play?.picks || play.picks.length !== length || play.pickGaps?.length !== length) return "Finish the game first: press a pad for every step.";
+  }
   return null;
 }
 
@@ -69,6 +81,21 @@ export function describePlay(question: Pick<Question, "kind" | "game">, play: Ga
     const target = ((question.game?.holdMs ?? 0) / 1000).toFixed(1);
     return `Timing game: hold a button for ${target}s with no clock. Held for ${play.holds.map((h) => (h / 1000).toFixed(2)).join("s, ")}s.`;
   }
+  if (question.kind === "aim" && play?.hits) {
+    const off = (play.offsets ?? []).map((o) => `${Math.round(o * 100)}%`).join(", ");
+    const missed = play.misses ? ` Missed ${play.misses} time${play.misses === 1 ? "" : "s"}.` : "";
+    return `Aim game, ${play.hits.length} dots. Reached them in ${play.hits.map((t) => Math.round(t)).join(", ")} ms, landing ${off} of the way from centre to edge.${missed}`;
+  }
+  if (question.kind === "beat" && play?.beatGaps) {
+    const beat = ((question.game?.beatMs ?? 0) / 1000).toFixed(2);
+    return `Rhythm game: shown a pulse every ${beat}s, then tapped it back. Gaps between taps: ${play.beatGaps.map((g) => (g / 1000).toFixed(2)).join("s, ")}s.`;
+  }
+  if (question.kind === "recall" && play?.picks) {
+    const sequence = question.game?.sequence ?? [];
+    const right = sequence.filter((pad, i) => play.picks![i] === pad).length;
+    const pace = (play.pickGaps ?? []).slice(1).map((g) => Math.round(g)).join(", ");
+    return `Memory game: shown ${sequence.length} pads lighting in order, then pressed them back. Got ${right} of ${sequence.length} right, ${pace} ms between presses.`;
+  }
   return undefined;
 }
 
@@ -76,5 +103,13 @@ export function describePlay(question: Pick<Question, "kind" | "game">, play: Ga
 export function leastGameTime(question: Pick<Question, "kind" | "game">, play: GamePlay | undefined): number {
   if (question.kind === "tap") return (question.game?.waits ?? []).reduce((n, w) => n + w, 0);
   if (question.kind === "hold") return (play?.holds ?? []).reduce((n, h) => n + h, 0);
+  const spec = question.game ?? {};
+  const sum = (xs: number[] | undefined) => (xs ?? []).reduce((n, x) => n + x, 0);
+  // The waits between dots, plus however long each took to reach.
+  if (question.kind === "aim") return (spec.targets?.length ?? 0) * (spec.gapMs ?? 0) + sum(play?.hits);
+  // Watching the pulses, then tapping them back.
+  if (question.kind === "beat") return Math.max(0, (spec.pulses ?? 0) - 1) * (spec.beatMs ?? 0) + sum(play?.beatGaps);
+  // Watching the pads light, then pressing them.
+  if (question.kind === "recall") return (spec.sequence?.length ?? 0) * (spec.showMs ?? 0) + sum(play?.pickGaps);
   return 0;
 }

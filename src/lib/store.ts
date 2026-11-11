@@ -424,6 +424,33 @@ export async function readHuntRecords(days?: number): Promise<HuntRecord[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+/** Something a signed-in player wanted the owner to read. */
+export interface FeedbackRecord {
+  at: number;
+  /** Who wrote it: the same one-way id the game knows them by. */
+  player: string;
+  /** What the board calls them, if they have played. */
+  handle?: string;
+  /** The page they were on. */
+  page?: string;
+  /** Where to reply, if they asked for one. */
+  email?: string;
+  text: string;
+}
+
+export async function appendFeedback(record: FeedbackRecord): Promise<void> {
+  await backend().append(`feedback/${dayOf(record.at)}`, record);
+}
+
+/** Messages from the last `days` days, today included. */
+export async function readFeedback(days = 30): Promise<FeedbackRecord[]> {
+  return backend().readLog<FeedbackRecord>(`feedback/${dayOf(Date.now() - (days - 1) * 86_400_000)}`, "feedback/~");
+}
+
+// ---------------------------------------------------------------------------
 // Behaviour model
 // ---------------------------------------------------------------------------
 
