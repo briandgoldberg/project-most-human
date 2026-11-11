@@ -11,8 +11,6 @@ export interface Question {
   category: string;
   prompt: string;
   hint?: string;
-  /** Time allowed, in seconds. When it runs out the page submits whatever is there. */
-  seconds?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +137,6 @@ export interface EntryAnswer {
   answeredAt: number;
   /** Server-observed time between serving the question and receiving the answer. */
   serverLatencyMs: number;
-  /** Arrived well after the time limit, which the real page never does. */
-  late?: boolean;
   features: AnswerFeatures;
 }
 

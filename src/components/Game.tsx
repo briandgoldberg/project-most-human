@@ -30,39 +30,6 @@ const ghost = "border border-line px-4 py-2.5 hover:border-paper disabled:opacit
 // Question types
 // ---------------------------------------------------------------------------
 
-/** Counts a question's time limit down and calls `onTimeUp` when it runs out. Returns the seconds left. */
-function useCountdown(seconds: number | undefined, onTimeUp: () => void): number | null {
-  const [left, setLeft] = useState<number | null>(null);
-  const callback = useRef(onTimeUp);
-  useEffect(() => {
-    callback.current = onTimeUp;
-  });
-  useEffect(() => {
-    if (!seconds) return;
-    const started = performance.now();
-    const tick = setInterval(
-      () => setLeft(Math.max(0, Math.ceil(seconds - (performance.now() - started) / 1000))),
-      250,
-    );
-    const end = setTimeout(() => callback.current(), seconds * 1000);
-    return () => {
-      clearInterval(tick);
-      clearTimeout(end);
-    };
-  }, [seconds]);
-  return left;
-}
-
-function Clock({ left, seconds }: { left: number | null; seconds?: number }) {
-  if (!seconds) return null;
-  const shown = left ?? seconds;
-  return (
-    <span className={`text-xs tabular-nums ${shown <= 10 ? "text-pulse" : "text-dim"}`} aria-label={`${shown} seconds left`}>
-      {shown}s
-    </span>
-  );
-}
-
 function TextQuestion({ question, onSubmit }: { question: Question; onSubmit: (s: Submission) => void }) {
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const collector = useRef<Collector | null>(null);
@@ -78,14 +45,10 @@ function TextQuestion({ question, onSubmit }: { question: Question; onSubmit: (s
     return () => c.stop();
   }, []);
 
-  const sent = useRef(false);
-  // When the clock runs out, whatever has been typed goes in, even if that is nothing.
-  const submit = (timeUp = false) => {
-    if ((!text.trim() && !timeUp) || !collector.current || sent.current) return;
-    sent.current = true;
+  const submit = () => {
+    if (!text.trim() || !collector.current) return;
     onSubmit({ questionId: question.id, text, telemetry: collector.current.finish() });
   };
-  const left = useCountdown(question.seconds, () => submit(true));
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
@@ -104,13 +67,10 @@ function TextQuestion({ question, onSubmit }: { question: Question; onSubmit: (s
         className="w-full resize-none border border-line bg-panel p-3 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none"
       />
       <div className="mt-3 flex items-center justify-between gap-3">
-        <span className="flex items-baseline gap-3">
-          <Clock left={left} seconds={question.seconds} />
-          <span className="text-xs text-dim tabular-nums">
-            {text.length}/{MAX_CHARS}
-          </span>
+        <span className="text-xs text-dim tabular-nums">
+          {text.length}/{MAX_CHARS}
         </span>
-        <button type="button" onClick={() => submit()} disabled={!text.trim()} className={button}>
+        <button type="button" onClick={submit} disabled={!text.trim()} className={button}>
           Answer
         </button>
       </div>
@@ -191,13 +151,10 @@ function DrawQuestion({ question, onSubmit }: { question: Question; onSubmit: (s
     setStrokeCount(0);
   };
 
-  const sent = useRef(false);
-  const submit = (timeUp = false) => {
-    if ((!strokes.current.length && !timeUp) || !collector.current || sent.current) return;
-    sent.current = true;
+  const submit = () => {
+    if (!strokes.current.length || !collector.current) return;
     onSubmit({ questionId: question.id, text: "", telemetry: collector.current.finish(strokes.current) });
   };
-  const left = useCountdown(question.seconds, () => submit(true));
 
   return (
     <div>
@@ -212,13 +169,10 @@ function DrawQuestion({ question, onSubmit }: { question: Question; onSubmit: (s
         style={{ cursor: "crosshair" }}
       />
       <div className="mt-3 flex items-center justify-between gap-3">
-        <span className="flex items-center gap-3">
-          <button type="button" onClick={clear} disabled={strokeCount === 0} className={ghost}>
-            Clear
-          </button>
-          <Clock left={left} seconds={question.seconds} />
-        </span>
-        <button type="button" onClick={() => submit()} disabled={strokeCount === 0} className={button}>
+        <button type="button" onClick={clear} disabled={strokeCount === 0} className={ghost}>
+          Clear
+        </button>
+        <button type="button" onClick={submit} disabled={strokeCount === 0} className={button}>
           Done
         </button>
       </div>

@@ -101,9 +101,6 @@ export function config() {
     questionSalt: env("QUESTION_SALT") ?? "",
     /** "llm": the judge model writes each player's questions live. "bank": drawn at random from the built-in bank. */
     questionSource: (env("QUESTION_SOURCE") ?? "llm") as "bank" | "llm",
-    /** Seconds allowed per typed answer and per drawing. */
-    questionSeconds: num("QUESTION_SECONDS", 75),
-    drawSeconds: num("DRAW_SECONDS", 45),
     solana: {
       cluster,
       rpcUrl: env("SOLANA_RPC_URL") ?? `https://api.${cluster}.solana.com`,

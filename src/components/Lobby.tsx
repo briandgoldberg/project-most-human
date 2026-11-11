@@ -119,8 +119,8 @@ export function Lobby() {
             </div>
             <div>
               <div className="mb-1 text-paper">2. Answer</div>
-              {round.questionCount} questions, one at a time, against the clock. Nobody else gets the same ones, and
-              some follow up on your own answers, so there&rsquo;s nothing to prepare.
+              {round.questionCount} questions, one at a time, with {round.sessionMinutes} minutes to finish. Nobody else
+              gets the same ones, and some follow up on your own answers, so there&rsquo;s nothing to prepare.
             </div>
             <div>
               <div className="mb-1 text-paper">3. Get judged</div>

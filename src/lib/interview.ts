@@ -16,10 +16,27 @@ import type { Question } from "./types";
  *
  * Follow-ups are the part that can't be prepared for: they don't exist until
  * the player has answered. Each question is written the moment it is needed,
- * by the model when it is available and from the built-in bank otherwise, and
- * each comes with a time limit.
+ * by the model when it is available and from the built-in bank otherwise.
  */
 export const QUESTION_PLAN = ["fresh", "followup", "fresh", "followup", "draw"] as const;
+
+/**
+ * Left to itself the model keeps coming back to the same handful of subjects,
+ * which would make questions guessable. Each fresh question is pointed at one
+ * of these at random instead.
+ */
+const ANGLES = [
+  "their shoes or feet", "the fridge", "a neighbour", "their phone screen", "the bathroom", "something they're wearing",
+  "the last thing they threw away", "their commute or the street outside", "a childhood snack", "a pet or an animal they saw",
+  "the weather where they are", "something that's broken at home", "their bed or how they slept", "a smell from today",
+  "a sound nearby", "something sticky, itchy or uncomfortable", "money they wasted", "a chore they're dodging",
+  "something they ate today", "an argument about something trivial", "a habit they'd be embarrassed to explain",
+  "their hands", "a thing on their desk or table", "the last time they were lost", "a lie they told recently",
+  "something they're bad at", "a stranger from this week", "their hair", "a drawer full of junk", "the last thing that made them jump",
+  "a relative's annoying saying", "something they keep meaning to fix", "what they'd rather be doing", "a bad purchase",
+  "the temperature of the room", "a song stuck in their head", "the last time they were late", "a food they refuse to eat",
+  "their handwriting", "something they dropped",
+];
 
 export interface Exchange {
   question: Question;
@@ -33,7 +50,7 @@ export async function nextQuestion(index: number, history: Exchange[]): Promise<
   const cfg = config();
   const kind = QUESTION_PLAN[index];
   if (kind === "draw") {
-    return { ...randomDrawQuestion(), id: id(), kind: "draw", seconds: cfg.drawSeconds };
+    return { ...randomDrawQuestion(), id: id(), kind: "draw" };
   }
 
   const asked = history.filter((h) => h.question.kind === "text");
@@ -41,9 +58,10 @@ export async function nextQuestion(index: number, history: Exchange[]): Promise<
     try {
       const written = await llmWriteNextQuestion({
         kind,
+        angle: ANGLES[Math.floor(Math.random() * ANGLES.length)],
         history: asked.map((h) => ({ prompt: h.question.prompt, answer: h.answer })),
       });
-      return { ...written, id: id(), kind: "text", seconds: cfg.questionSeconds };
+      return { ...written, id: id(), kind: "text" };
     } catch (err) {
       console.error("[interview] question writer failed; using the question bank:", err);
     }
@@ -52,5 +70,5 @@ export async function nextQuestion(index: number, history: Exchange[]): Promise<
     asked.map((h) => h.question.prompt),
     asked.map((h) => h.question.category),
   );
-  return { ...fromBank, id: id(), kind: "text", seconds: cfg.questionSeconds };
+  return { ...fromBank, id: id(), kind: "text" };
 }

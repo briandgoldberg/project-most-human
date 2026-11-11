@@ -110,14 +110,56 @@ test("the competition and the training room share a judge but nothing else", asy
     assert.equal(e.judgeCorrect, e.judge.verdict === e.label);
     // Each record says which notice the player saw and which judge scored them.
     assert.equal(e.consent, "v2");
-    assert.equal(e.judge.judgeVersion, "1");
+    assert.equal(e.judge.judgeVersion, "2");
   }
-  // Training sessions draw their own questions, so repeat sessions don't see the same set.
+  // Nobody shares questions with anyone else.
   assert.notDeepEqual(examples[0].questions.map((q) => q.id), examples[1].questions.map((q) => q.id));
 
   // A reload mid-game or after it resumes where the player left off.
   const resumed = await game.sessionStatus(payer.token);
   assert.ok(resumed.done && resumed.result.score === payerResult.score);
+});
+
+test("every player is asked their own questions, written one at a time", async () => {
+  const game = await import("../game");
+  const { nextQuestion, QUESTION_PLAN } = await import("../interview");
+  assert.deepEqual([...QUESTION_PLAN], ["fresh", "followup", "fresh", "followup", "draw"]);
+
+  const a = await game.enter({ handle: "asker a" });
+  const b = await game.enter({ handle: "asker b" });
+  assert.equal(a.total, 5);
+  assert.notEqual(a.question.id, b.question.id);
+
+  // The next question doesn't exist until the current one is answered, and asking twice gives the same one.
+  const store = await import("../store");
+  const held = async () => (await store.readRound(a.roundId))!.entries[a.entryId].questions!.length;
+  assert.equal(await held(), 1);
+  const again = await game.sessionStatus(a.token);
+  assert.ok(!again.done && again.question.id === a.question.id);
+
+  const kinds = [a.question.kind];
+  const prompts = [a.question.prompt];
+  let question = a.question;
+  for (let i = 0; i < 4; i++) {
+    const out = await game.answer({ token: a.token, questionId: question.id, text: "the dishes obviously", telemetry: typed("the dishes obviously", [120, 90, 240]) });
+    assert.ok(!out.done);
+    assert.equal(out.index, i + 1);
+    assert.equal(await held(), i + 2);
+    question = out.question;
+    kinds.push(question.kind);
+    prompts.push(question.prompt);
+  }
+  assert.deepEqual(kinds, ["text", "text", "text", "text", "draw"]);
+  assert.equal(new Set(prompts).size, 5, "a session never repeats a question");
+
+  // Without the model, questions come from the bank and steer clear of what was already asked.
+  const used = { question: { id: "x", kind: "text" as const, category: "petty", prompt: "What's a word or phrase you can't stand hearing?" }, answer: "moist" };
+  for (let i = 0; i < 25; i++) {
+    const q = await nextQuestion(1, [used]);
+    assert.notEqual(q.prompt, used.question.prompt);
+    assert.notEqual(q.category, "petty");
+  }
+  assert.equal((await nextQuestion(4, [])).kind, "draw");
 });
 
 const OWNER = { id: "owner", label: "ask" as const, password: "owner-dev", owner: true };

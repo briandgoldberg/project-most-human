@@ -1,6 +1,6 @@
 # Project Most Human
 
-A daily game. An AI judge asks everyone the same few questions and scores how human each player seems, from 0 to 100. People play. Bots play too, pretending to be people. The most human player takes the pool.
+A daily game. An AI judge asks each player a few questions, some of them about what that player just said, and scores how human they seem, from 0 to 100. People play. Bots play too, pretending to be people. The most human player takes the pool.
 
 The judge looks at two things: **what you say**, and **how you produce it** (typing rhythm, corrections, pasting, pointer paths, how you draw, how long each answer really took, what the browser reports about itself).
 
@@ -11,7 +11,7 @@ The judge looks at two things: **what you say**, and **how you produce it** (typ
 | Where | `/` | `/train` |
 | Who | Anyone | You and friends, behind a password. The house bots. |
 | Cost | Entry fee, paid into the pool | Free |
-| Questions | The day's set, same for everyone | A fresh draw every session |
+| Questions | Written live for each player | Written live for each session |
 | Outcome | A place on the board; top score wins the pool | A labelled training example |
 
 The public page has no password field and its API ignores one. Training sessions never appear on the public board or count toward the pool.
@@ -44,6 +44,8 @@ npm test
 4. **AI judge** (`judge/llm.ts`). Claude reads the answers together with the readings and returns a score, private notes on what moved it, and a one-line remark for the player. It is also shown a handful of recent revealed cases, its own mistakes first, so it calibrates as data comes in.
 
 The final score is half AI judge, half behaviour (rules blended with the model). If the AI judge is unavailable the behaviour score stands alone, so a player is never left unscored.
+
+**Questions can't be prepared for.** No two players are asked the same things. Each of the five questions is written by the AI at the moment it is needed (`src/lib/interview.ts`): a fresh one, a follow-up to the player's answer, another fresh one, a follow-up to that, then a drawing. Fresh questions are pointed at a random subject so they don't converge on a few favourites, and follow-ups don't exist until the player has answered. Expect a pause of two or three seconds between questions while the next is written. Without an API key, or with `QUESTION_SOURCE=bank`, questions are drawn at random from a built-in bank of 45 instead, which a determined player could prepare for.
 
 The server cannot make telemetry truthful: a bot can send well-formed lies. That is the game. What a bot cannot fake is the time the server sees pass between serving a question and receiving its answer, which is why questions are served one at a time.
 
@@ -122,7 +124,8 @@ src/lib/judge/           rules, behaviour model, AI judge
 src/lib/telemetry/       browser collector, sanitising, feature extraction
 src/lib/payments/        Solana transfer building and on-chain verification
 src/lib/training.ts      training-room access, dashboard, retraining
-src/lib/questions.ts     the question bank and daily draw
+src/lib/interview.ts     what each player is asked: live questions and follow-ups
+src/lib/questions.ts     the fallback question bank
 src/lib/store.ts         storage: files locally, Supabase when hosted
 supabase/migrations/     database schema for hosted storage
 scripts/                 house bots, training, payout, devnet setup

@@ -45,10 +45,6 @@ const solana = () => import("./payments/solana");
 export const CONSENT_VERSION = "v2";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** An empty answer is accepted this close to the limit, to allow for the page's clock running slightly ahead. */
-const TIME_UP_SLACK_MS = 3000;
-/** Network delay allowed past the limit before an answer counts as late. */
-const LATE_GRACE_MS = 10_000;
 const INTENT_TTL_MS = 20 * 60 * 1000;
 const HANDLE = /^[A-Za-z0-9][A-Za-z0-9 _.-]{1,19}$/;
 
@@ -604,16 +600,12 @@ export async function answer(input: {
         total,
       });
     }
-    // When the clock runs out the page sends whatever is there, even nothing.
-    const took = now - entry.servedAt[entry.progress];
-    const limitMs = question.seconds ? question.seconds * 1000 : null;
-    const timeUp = limitMs !== null && took >= limitMs - TIME_UP_SLACK_MS;
     if (question.kind === "text") {
-      if (!text && !timeUp) throw new GameError(400, "empty_answer", "Say something");
+      if (!text) throw new GameError(400, "empty_answer", "Say something");
       if (text.length > MAX_ANSWER_CHARS) {
         throw new GameError(400, "too_long", `Keep it under ${MAX_ANSWER_CHARS} characters`);
       }
-    } else if (!telemetry.strokes?.length && !timeUp) {
+    } else if (!telemetry.strokes?.length) {
       throw new GameError(400, "empty_drawing", "Draw something first");
     }
 
@@ -622,9 +614,7 @@ export async function answer(input: {
       questionId: question.id,
       text: answerText,
       answeredAt: now,
-      serverLatencyMs: took,
-      // The page submits by itself at the limit, so anything much later didn't come from the page.
-      late: limitMs !== null && took > limitMs + LATE_GRACE_MS ? true : undefined,
+      serverLatencyMs: now - entry.servedAt[entry.progress],
       features: extractAnswerFeatures(question.kind, answerText, telemetry),
     });
     if (telemetry.env) {
