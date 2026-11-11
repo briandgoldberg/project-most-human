@@ -274,6 +274,53 @@ export async function readTrainingFull(): Promise<TrainingExample[]> {
 }
 
 // ---------------------------------------------------------------------------
+// What the game spends on Claude
+// ---------------------------------------------------------------------------
+
+/** One call to the model: what it was for and what it cost in tokens. */
+export interface UsageRecord {
+  at: number;
+  /** "judge", "question", "questions" (a batch), "decoy", "debrief". */
+  purpose: string;
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
+
+export async function appendUsage(record: UsageRecord): Promise<void> {
+  await backend().append(`usage/${dayOf(record.at)}`, record);
+}
+
+/** Calls made in the last `days` days, today included. */
+export async function readUsage(days = 1): Promise<UsageRecord[]> {
+  return backend().readLog<UsageRecord>(`usage/${dayOf(Date.now() - (days - 1) * 86_400_000)}`, "usage/~");
+}
+
+// ---------------------------------------------------------------------------
+// Questions written ahead of time
+// ---------------------------------------------------------------------------
+
+/** Fresh questions waiting to be asked. Each is used once. */
+export interface QuestionPool {
+  you: { category: string; prompt: string; shortOk?: boolean }[];
+  wild: { category: string; prompt: string; shortOk?: boolean }[];
+}
+
+const QUESTION_POOL = "questions/pool";
+
+export async function readQuestionPool(): Promise<QuestionPool> {
+  return (await backend().getDoc<QuestionPool>(QUESTION_POOL))?.value ?? { you: [], wild: [] };
+}
+
+export async function updateQuestionPool<T>(fn: (pool: QuestionPool) => T): Promise<T> {
+  return updateDoc<QuestionPool, T>(QUESTION_POOL, fn, async () => ({ you: [], wild: [] }));
+}
+
+// ---------------------------------------------------------------------------
 // Players
 // ---------------------------------------------------------------------------
 
@@ -290,6 +337,9 @@ export interface PlayerRecord {
   paid?: number;
   /** Where they have asked for their balance to be sent. */
   wallet?: string;
+  /** Games of theirs that were broken off for breaking the rules. Enough of these and the account is banned. */
+  strikes?: { at: number; reason: string }[];
+  banned?: { at: number; reason: string };
   firstAt: number;
   lastAt: number;
 }
@@ -312,6 +362,19 @@ export async function updatePlayer<T>(id: string, fn: (player: PlayerRecord) => 
     },
     async () => ({ games: 0, seen: [], firstAt: Date.now(), lastAt: Date.now() }),
   );
+}
+
+/** The accounts currently banned, so the owner can see them and lift a ban. Player records can't be listed. */
+export type BanList = Record<string, { at: number; reason: string; handle?: string }>;
+
+const BANS = "players-banned";
+
+export async function readBans(): Promise<BanList> {
+  return (await backend().getDoc<BanList>(BANS))?.value ?? {};
+}
+
+export async function updateBans<T>(fn: (bans: BanList) => T): Promise<T> {
+  return updateDoc<BanList, T>(BANS, fn, async () => ({}));
 }
 
 // ---------------------------------------------------------------------------

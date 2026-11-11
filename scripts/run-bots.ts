@@ -6,6 +6,7 @@ import { Connection, Keypair, Transaction } from "@solana/web3.js";
 import type { Kind, Question } from "../src/lib/types";
 import { runBrowserBot } from "./bots/browser";
 import { sendDebrief } from "./bots/debrief";
+import { fabricateGame, type GameSkill } from "./bots/games";
 import { PERSONAS, type Persona } from "./bots/personas";
 import { STEALTH_PERSONAS, runStealthBot } from "./bots/stealth";
 import { rand } from "./bots/synth";
@@ -112,12 +113,23 @@ async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
       res = await post("/api/hunt", { token, huntId: step.hunt.id, pick: Math.random() < 0.5 ? 0 : 1, reason: "the other one read more naturally to me" }, ua);
     } else {
       const question = step.question!;
-      const text = await answerText(question, persona.voice, args.llm!);
-      const telemetry = persona.respond(question, text, clock);
-      const wait = persona.latencyMs?.(telemetry) ?? telemetry.submittedAt - telemetry.shownAt;
-      await sleep(args.fast ? wait / 25 : wait);
-      res = await post("/api/answer", { token, questionId: question.id, text, telemetry }, ua);
-      clock = telemetry.submittedAt + rand(300, 900);
+      // An answer that breaks the rules of play comes back; a canned line can do that by repeating one. Try another.
+      for (let attempt = 0; ; attempt++) {
+        const text = await answerText(question, persona.voice, args.llm!);
+        const telemetry = persona.respond(question, text, clock);
+        // Mini-games: the crude personas play like scripts, the careful ones like people.
+        const skill: GameSkill = ["api-bot", "paster", "metronome"].includes(persona.name) ? "robot" : "human";
+        const played = fabricateGame(question, skill);
+        if (played) {
+          telemetry.game = played.game;
+          telemetry.submittedAt += Math.round(played.ms);
+        }
+        const wait = played && skill === "human" ? telemetry.submittedAt - telemetry.shownAt : (persona.latencyMs?.(telemetry) ?? telemetry.submittedAt - telemetry.shownAt);
+        await sleep(args.fast ? wait / 25 : wait);
+        res = await post("/api/answer", { token, questionId: question.id, text, telemetry }, ua);
+        clock = telemetry.submittedAt + rand(300, 900);
+        if (!(res.status === 400 && res.json.error === "answer_rejected" && attempt < 4)) break;
+      }
     }
     if (res.status !== 200) throw new Error(`${handle}: move rejected: ${res.json.message}`);
     if (res.json.done) {

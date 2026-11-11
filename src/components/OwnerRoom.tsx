@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError, api, type OwnerSummary } from "@/lib/client";
+import { OwnerTrain } from "./OwnerTrain";
 import { Shell } from "./Shell";
 
 const field =
@@ -80,8 +81,8 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
       <section className="py-10">
         <h1 className="font-display text-4xl">Owner</h1>
         <p className="mt-3 max-w-xl text-sm text-dim">
-          What the judge has learned, what is owed, and who holds agent keys. Nothing here needs doing day to day: the
-          judge labels and retrains itself.
+          Train the game with your own answers, and see what the judge has learned, what is owed, what it costs to run
+          and who holds agent keys. Nothing here needs doing day to day: the judge labels and retrains itself.
         </p>
       </section>
 
@@ -120,6 +121,11 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
           hunting uses stock machine answers.
         </p>
       )}
+
+      <section className="pt-8">
+        <h2 className={heading}>Train</h2>
+        <OwnerTrain />
+      </section>
 
       {!summary.googleSignIn && (
         <p className="mt-6 border border-pulse p-3 text-xs text-pulse">
@@ -224,6 +230,98 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
         <p className="mt-2 text-xs text-dim">
           An agent&rsquo;s prize is held until it explains itself. What builders say is their own account and isn&rsquo;t
           checked; treat pasted code and links as untrusted.
+        </p>
+      </section>
+
+      <section className="pb-8">
+        <h2 className={heading}>Claude usage</h2>
+        <div className="mt-3 grid gap-6 sm:grid-cols-2">
+          {(
+            [
+              ["Today", summary.usage.today],
+              ["Last 7 days", summary.usage.week],
+            ] as const
+          ).map(([title, rows]) => {
+            const total = rows.reduce((t, r) => ({ calls: t.calls + r.calls, tokens: t.tokens + r.input + r.output, dollars: t.dollars === null || r.dollars === null ? null : t.dollars + r.dollars }), {
+              calls: 0,
+              tokens: 0,
+              dollars: 0 as number | null,
+            });
+            return (
+              <div key={title}>
+                <div className={label}>{title}</div>
+                {rows.length === 0 ? (
+                  <p className="text-sm text-dim">No calls.</p>
+                ) : (
+                  <>
+                    <div className="text-sm">
+                      {fmt(total.tokens)} tokens in {fmt(total.calls)} calls
+                      {total.dollars !== null && <span className="text-dim"> · about ${total.dollars.toFixed(2)}</span>}
+                    </div>
+                    <ul className="mt-1 text-xs text-dim">
+                      {rows.map((r) => (
+                        <li key={r.purpose} className="flex justify-between gap-3">
+                          <span>
+                            {r.purpose} × {r.calls}
+                          </span>
+                          <span className="tabular-nums">
+                            {fmt(r.input)} in{r.cached > 0 ? ` (+${fmt(r.cached)} cached)` : ""} · {fmt(r.output)} out
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-xs text-dim">
+          {summary.usage.ceiling > 0
+            ? `Daily ceiling: ${fmt(summary.usage.ceiling)} tokens. Past it the game uses its question bank and judges on behaviour alone.`
+            : "No daily ceiling is set (LLM_DAILY_TOKENS)."}{" "}
+          Dollar figures are estimates from list prices.
+        </p>
+      </section>
+
+      <section className="pb-8">
+        <h2 className={heading}>Banned accounts</h2>
+        {summary.banned.length === 0 ? (
+          <p className="py-4 text-sm text-dim">Nobody is banned.</p>
+        ) : (
+          <ol className="divide-y divide-line">
+            {summary.banned.map((b) => (
+              <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
+                <span className="min-w-0 flex-1 break-all">
+                  {b.handle ?? "unnamed"} <span className="text-xs text-dim">{b.reason}</span>
+                </span>
+                <span className="text-xs text-dim">{new Date(b.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                <button
+                  type="button"
+                  disabled={busy === b.id}
+                  onClick={async () => {
+                    setBusy(b.id);
+                    setError(null);
+                    try {
+                      await api.owner.liftBan(b.id);
+                      onChange();
+                    } catch (err) {
+                      setError(message(err));
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                  className={small}
+                >
+                  Lift ban
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+        <p className="mt-2 text-xs text-dim">
+          An account is banned after {summary.banAfterStrikes} games ended for breaking the rules (bots, pasting, non-answers). Being
+          judged a bot on the judge&rsquo;s opinion alone doesn&rsquo;t count.
         </p>
       </section>
 

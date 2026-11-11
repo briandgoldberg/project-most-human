@@ -7,10 +7,37 @@ export type Game = typeof import("../game");
 export type Outcome = Awaited<ReturnType<Game["answer"]>>;
 export const ANSWERS = [
   "my left knee, i sit on it like an idiot and then act surprised",
-  "since college probably",
+  "since college probably, maybe a bit before",
   "the neighbours dog. it has opinions about the bin lorry and shares them at 6am",
-  "no",
+  "nah not really, it just sort of happens",
 ];
+
+/** What a person's go at a mini-game or drawing looks like, for whichever one the question is. */
+export function playLikeAPerson(q: Question, n = 0) {
+  if (q.kind === "draw") return drawing();
+  const base = humanlike("", n);
+  base.keys = [];
+  base.inputs = [];
+  if (q.kind === "tap") {
+    const waits = q.game?.waits ?? [];
+    const taps = waits.map((_, i) => [243.5, 268.2, 311.9, 229.4, 287.1][i % 5] + n);
+    base.game = { taps, early: n % 2 };
+    base.submittedAt = base.shownAt + waits.reduce((a, b) => a + b, 0) + taps.reduce((a, b) => a + b, 0) + 2500;
+  } else {
+    const target = q.game?.holdMs ?? 3000;
+    const holds = [0.91, 1.07, 0.97].map((k) => Math.round(target * k));
+    base.game = { holds };
+    base.submittedAt = base.shownAt + holds.reduce((a, b) => a + b, 0) + 4000;
+  }
+  return base;
+}
+
+/** The same, played the way a script does: instantly and exactly, with no sign of a browser. */
+export function playLikeAScript(q: Question) {
+  if (q.kind === "draw") return { strokes: [[[1, 1, 1, 0], [2, 9, 9, 0]]] };
+  if (q.kind === "tap") return { game: { taps: (q.game?.waits ?? []).map(() => 6), early: 0 } };
+  return { game: { holds: Array.from({ length: q.game?.tries ?? 3 }, () => q.game?.holdMs ?? 3000) } };
+}
 
 /** The entry as the server holds it, including what the player is never shown. */
 export async function peek(session: { roundId: string; entryId: string }): Promise<Entry> {
@@ -38,6 +65,8 @@ export async function play(
   const { updateRound } = await import("../store");
   let step: Outcome = { done: false, question: session.question, index: 0, total: 0 };
   let n = 0;
+  // Answers given so far: each has to be new, or the game sends it back.
+  let said = 0;
   const seen: string[] = [];
   for (;;) {
     const now = step;
@@ -59,13 +88,14 @@ export async function play(
       continue;
     }
     const q: Question = now.question!;
-    seen.push(q.kind);
-    const text = q.kind === "text" ? ANSWERS[n % ANSWERS.length] : "";
+    // Which mini-game comes up is the luck of the draw, so they all count as "game".
+    seen.push(q.kind === "text" ? "text" : "game");
+    const text = q.kind === "text" ? ANSWERS[said++ % ANSWERS.length] : "";
     if (opts.how === "script") {
-      // No recording of a person producing anything; the drawing is the least that is accepted.
-      step = await game.answer({ token: session.token, questionId: q.id, text, telemetry: q.kind === "draw" ? { strokes: [[[1, 1, 1, 0], [2, 9, 9, 0]]] } : {} });
+      // No recording of a person producing anything; games are sent back played the least that is accepted.
+      step = await game.answer({ token: session.token, questionId: q.id, text, telemetry: q.kind === "text" ? {} : playLikeAScript(q) });
     } else {
-      const telemetry = q.kind === "draw" ? drawing() : humanlike(text, n);
+      const telemetry = q.kind === "text" ? humanlike(text, n) : playLikeAPerson(q, n);
       // A person takes as long as their recording says. Tests don't wait, so move the question's start back instead.
       await updateRound(session.roundId, (state) => {
         const e = state.entries[session.entryId];
@@ -92,12 +122,13 @@ export async function untilHunt(game: Game, session: { token: string; roundId: s
       continue;
     }
     const q: Question = step.question!;
-    const telemetry = humanlike(ANSWERS[n], n);
+    const text = q.kind === "text" ? ANSWERS[(await peek(session)).answers.filter((a) => a.text).length % ANSWERS.length] : "";
+    const telemetry = q.kind === "text" ? humanlike(text, n) : playLikeAPerson(q, n);
     await updateRound(session.roundId, (state) => {
       const e = state.entries[session.entryId];
       e.servedAt[e.answers.length] = Date.now() - (telemetry.submittedAt - telemetry.shownAt);
     });
-    step = await game.answer({ token: session.token, questionId: q.id, text: ANSWERS[n], telemetry });
+    step = await game.answer({ token: session.token, questionId: q.id, text, telemetry });
     n++;
   }
 }

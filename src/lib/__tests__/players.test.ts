@@ -110,7 +110,7 @@ test("a player who has judged nearly every real answer is asked to come back whe
   // Twelve real answers from three other people arrive. Now there is a full game's worth for everyone.
   await seedPool();
   assert.equal((await me(P0)).canPlay, true);
-  // With the three usable answers each of the first two players left, that is eighteen for anyone new.
+  // With the four answers each of the first two players left, that is twenty for anyone new.
 
   // A full game uses six of them: one easy round, two medium, three hard.
   const one = await gameAs(game, P1, "keen");
@@ -138,16 +138,17 @@ test("a player who has judged nearly every real answer is asked to come back whe
 
   // Nobody else is held up, and P1's own answers are now material for them.
   assert.equal((await me(P2)).canPlay, true);
+  // P1 had two answers left unseen. One more person's four make a game's worth again.
   await gameAs(game, P2, "second");
-  // One more person's answers aren't a game's worth for P1. Two people's are.
-  assert.equal((await me(P1)).canPlay, false);
-  await gameAs(game, P3, "third");
   assert.equal((await me(P1)).canPlay, true);
   const four = await gameAs(game, P1, "keen");
   assert.ok(four.hunts.length === 6 && four.hunts.every((h) => !shown.some((old) => seenKey(old) === seenKey(h))));
+  // Now nothing is left, and one more person's four answers are not enough for a game.
+  assert.equal((await me(P1)).canPlay, false);
+  await gameAs(game, P3, "third");
+  assert.equal((await me(P1)).canPlay, false);
 
   // The owner can switch the rule off, for testing: then answers may come round again.
-  assert.equal((await me(P1)).canPlay, false);
   process.env.HUNT_REPEATS = "on";
   assert.equal((await me(P1)).canPlay, true);
   delete process.env.HUNT_REPEATS;
@@ -189,7 +190,7 @@ test("prizes build up in a player's balance, and are sent once they say where", 
     process.env.GOOGLE_CLIENT_ID = "x.apps.googleusercontent.com";
     await assert.rejects(game.saveWallet(null, "some-browser-cookie-id", WALLET), /Sign in with Google first/);
     delete process.env.GOOGLE_CLIENT_ID;
-    assert.deepEqual(await game.saveWallet(P5, undefined, ` ${WALLET} `), { signedIn: true, name: "Eve", handle: "saver", canPlay: (await game.whoAmI(P5, undefined)).canPlay, balance: 100, wallet: WALLET });
+    assert.deepEqual(await game.saveWallet(P5, undefined, ` ${WALLET} `), { signedIn: true, name: "Eve", handle: "saver", canPlay: (await game.whoAmI(P5, undefined)).canPlay, banned: false, strikes: 0, balance: 100, wallet: WALLET });
     assert.equal((await readPlayer(P5.id))!.wallet, WALLET);
 
     // Now everything they have won is owed to that address, and so is what they win next.

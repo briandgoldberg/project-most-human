@@ -39,9 +39,16 @@ export interface HumanAnswer {
 }
 
 /** Turn what was recorded about one answer into what a hunter is shown. */
-function evidenceOf(text: string, f: Partial<AnswerFeatures> | undefined, device: Device | undefined): Evidence {
+function evidenceOf(text: string, f: Partial<AnswerFeatures> | undefined, device: Device | undefined, gaps?: number[]): Evidence {
   const writingMs = f?.composeMs ?? null;
+  const strip = gaps?.length ? gaps.slice(0, STRIP) : undefined;
   return {
+    gaps: strip,
+    longestPauseMs: strip ? Math.max(...strip) : null,
+    keyHoldMs: f?.dwellMean ?? null,
+    pointerMoved: f?.pointerSamples === undefined ? null : f.pointerSamples > 0,
+    leftPage: (f?.hiddenCount ?? 0) + (f?.focusLoss ?? 0),
+    totalMs: f?.clientMs ?? null,
     device: device ?? "unknown",
     startDelayMs: f?.firstInputDelay ?? null,
     writingMs,
@@ -54,6 +61,9 @@ function evidenceOf(text: string, f: Partial<AnswerFeatures> | undefined, device
   };
 }
 
+/** How many keystrokes of rhythm a hunter is shown. */
+const STRIP = 60;
+
 const between = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 const near = (value: number, spread = 0.2) => value * between(1 - spread, 1 + spread);
 
@@ -64,16 +74,33 @@ const near = (value: number, spread = 0.2) => value * between(1 - spread, 1 + sp
  * on the real person's own readings.
  */
 function forgeEvidence(level: number, decoy: string, person: Evidence): Evidence {
+  // What a hunter is shown beyond the basics is forged to the same standard. If the person's own
+  // record predates one of these readings, the forgery leaves it out too, so its presence gives nothing away.
+  const has = { strip: Boolean(person.gaps?.length), hold: person.keyHoldMs !== null && person.keyHoldMs !== undefined, pointer: person.pointerMoved !== null && person.pointerMoved !== undefined };
   if (level <= 1) {
-    return { device: "desktop", startDelayMs: Math.round(between(150, 450)), writingMs: 0, charsPerSecond: null, rhythm: null, pauses: 0, corrections: 0, pasted: 1, keyOverlap: null };
+    const start = Math.round(between(150, 450));
+    return {
+      device: "desktop", startDelayMs: start, writingMs: 0, charsPerSecond: null, rhythm: null, pauses: 0, corrections: 0, pasted: 1, keyOverlap: null,
+      gaps: undefined, longestPauseMs: null, keyHoldMs: null, pointerMoved: has.pointer ? false : null, leftPage: 0, totalMs: start + Math.round(between(200, 600)),
+    };
   }
   const phone = person.device === "phone";
   if (level === 2 || person.charsPerSecond === null) {
     const cps = between(6.5, 8.5);
+    const start = Math.round(between(1200, 2600));
+    const writing = Math.round((decoy.length / cps) * 1000);
+    // Too even: every gap within a few percent of the same length.
+    const strip = has.strip ? Array.from({ length: Math.min(STRIP, Math.max(1, decoy.length - 1)) }, () => Math.round(near(1000 / cps, 0.12))) : undefined;
     return {
+      gaps: strip,
+      longestPauseMs: strip ? Math.max(...strip) : null,
+      keyHoldMs: has.hold ? Math.round(between(78, 84)) : null,
+      pointerMoved: has.pointer ? false : null,
+      leftPage: 0,
+      totalMs: start + writing + Math.round(between(300, 700)),
       device: person.device,
-      startDelayMs: Math.round(between(1200, 2600)),
-      writingMs: Math.round((decoy.length / cps) * 1000),
+      startDelayMs: start,
+      writingMs: writing,
       charsPerSecond: Number(cps.toFixed(1)),
       rhythm: Number(between(0.16, 0.3).toFixed(2)),
       pauses: 0,
@@ -83,10 +110,21 @@ function forgeEvidence(level: number, decoy: string, person: Evidence): Evidence
     };
   }
   const cps = near(person.charsPerSecond);
+  const start = person.startDelayMs === null ? Math.round(between(2000, 5000)) : Math.round(near(person.startDelayMs, 0.3));
+  const writing = Math.round((decoy.length / cps) * 1000);
+  // Modelled on the person: their own gaps, drawn again in a different order and nudged.
+  const own = person.gaps ?? [];
+  const strip = has.strip ? Array.from({ length: Math.min(STRIP, Math.max(1, decoy.length - 1)) }, () => Math.round(near(own[Math.floor(Math.random() * own.length)], 0.15))) : undefined;
   return {
+    gaps: strip,
+    longestPauseMs: strip ? Math.max(...strip) : null,
+    keyHoldMs: has.hold ? Math.round(near(person.keyHoldMs!, 0.1)) : null,
+    pointerMoved: has.pointer ? person.pointerMoved : null,
+    leftPage: Math.random() < 0.8 ? (person.leftPage ?? 0) : 0,
+    totalMs: start + writing + Math.round(between(400, 1500)),
     device: person.device,
-    startDelayMs: person.startDelayMs === null ? Math.round(between(2000, 5000)) : Math.round(near(person.startDelayMs, 0.3)),
-    writingMs: Math.round((decoy.length / cps) * 1000),
+    startDelayMs: start,
+    writingMs: writing,
     charsPerSecond: Number(cps.toFixed(1)),
     rhythm: person.rhythm === null ? null : Number(near(person.rhythm).toFixed(2)),
     pauses: Math.max(0, person.pauses + Math.round(between(-1, 1))),
@@ -104,27 +142,32 @@ function showable(text: string): boolean {
   return !/https?:|www\.|@\w+\.\w|\b\d[\d\s().-]{7,}\d\b/i.test(t);
 }
 
+/** A few of the items, picked at random. */
+const sample = <T,>(items: T[], n: number): T[] => [...items].sort(() => Math.random() - 0.5).slice(0, n);
+
 let cache: { at: number; pool: HumanAnswer[] } | undefined;
 const CACHE_MS = 60_000;
 
 /** Every real answer currently available to hunt with. */
 export async function humanPool(now = Date.now()): Promise<HumanAnswer[]> {
   if (cache && now - cache.at < CACHE_MS) return cache.pool;
-  const sessions = new Map<string, { questionId: string; prompt: string; text: string; evidence: Evidence; player?: string }[]>();
+  // Answers grouped by who wrote them in one sitting, so an imitation has other things of theirs to go on.
+  const sessions = new Map<string, { questionId: string; prompt: string; text: string; evidence: Evidence; player?: string; sourceEntryId: string }[]>();
   const add = (
     entryId: string,
     player: string | undefined,
     device: Device | undefined,
     questions: { id: string; kind: string; prompt: string }[],
-    answers: { questionId: string; text: string; features?: Partial<AnswerFeatures> }[],
+    answers: { questionId: string; text: string; features?: Partial<AnswerFeatures>; gaps?: number[] }[],
+    group = entryId,
   ) => {
     const items = answers.flatMap((a) => {
       const q = questions.find((x) => x.id === a.questionId);
       if (!q || q.kind !== "text" || !showable(a.text)) return [];
       const text = a.text.trim();
-      return [{ questionId: q.id, prompt: q.prompt, text, evidence: evidenceOf(text, a.features, device), player }];
+      return [{ questionId: q.id, prompt: q.prompt, text, evidence: evidenceOf(text, a.features, device, a.gaps), player, sourceEntryId: entryId }];
     });
-    if (items.length) sessions.set(entryId, items);
+    if (items.length) sessions.set(group, [...(sessions.get(group) ?? []), ...items]);
   };
 
   // Players taken to be human: by the judge with confidence, or by hand in the past. Ones the judge
@@ -132,11 +175,12 @@ export async function humanPool(now = Date.now()): Promise<HumanAnswer[]> {
   for (const e of await readTraining()) {
     if (e.label !== "human") continue;
     if (e.source === "auto" && !SHOWABLE_CONSENT.test(e.consent ?? "")) continue;
-    add(e.entryId, e.player, e.device, e.questions, e.answers);
+    // Answers given in the training area are one each; everything one trainer wrote counts as one sitting.
+    add(e.entryId, e.player, e.device, e.questions, e.answers, e.source === "seed" ? `seed:${e.player ?? e.cohortId}` : e.entryId);
   }
 
-  const pool = [...sessions].flatMap(([sourceEntryId, items]) =>
-    items.map((item) => ({ ...item, sourceEntryId, others: items.filter((o) => o !== item).map((o) => o.text) })),
+  const pool = [...sessions.values()].flatMap((items) =>
+    items.map((item) => ({ ...item, others: sample(items.filter((o) => o !== item), 6).map((o) => o.text) })),
   );
   cache = { at: now, pool };
   return pool;
@@ -173,9 +217,15 @@ async function decoyFor(answer: HumanAnswer, level: number): Promise<string> {
   if (!config().judge.llmEnabled) return CANNED_DECOYS[Math.floor(Math.random() * CANNED_DECOYS.length)];
   const saved = await readDecoy(key);
   if (saved) return saved;
-  const text = await llmWriteDecoy({ level, prompt: answer.prompt, words: wordCount(answer.text), samples: answer.others });
-  await saveDecoy(key, text);
-  return text;
+  try {
+    const text = await llmWriteDecoy({ level, prompt: answer.prompt, words: wordCount(answer.text), samples: answer.others });
+    await saveDecoy(key, text);
+    return text;
+  } catch (err) {
+    // The model is unavailable or over its ceiling for the day: a stock machine answer keeps the round playable.
+    console.error("[hunt] could not write a decoy; using a stock one:", err);
+    return CANNED_DECOYS[Math.floor(Math.random() * CANNED_DECOYS.length)];
+  }
 }
 
 /** A short name for one real answer, for remembering who has been shown it. */

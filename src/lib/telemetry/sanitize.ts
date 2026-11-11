@@ -1,4 +1,4 @@
-import type { AnswerTelemetry, ClientEnv } from "../types";
+import type { AnswerTelemetry, ClientEnv, GamePlay } from "../types";
 
 /**
  * Telemetry arrives from the player's machine and may be malformed or
@@ -46,6 +46,20 @@ function sanitizeEnv(value: unknown): ClientEnv | undefined {
     cores: isNum(e.cores) ? e.cores : 0,
     plugins: isNum(e.plugins) ? e.plugins : 0,
   };
+}
+
+const GAME_LIMIT = 12;
+const MAX_GAME_MS = 60_000;
+
+function sanitizeGame(value: unknown): GamePlay | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const g = value as Record<string, unknown>;
+  const times = (x: unknown): number[] | undefined =>
+    Array.isArray(x) ? x.slice(0, GAME_LIMIT).filter((t): t is number => isNum(t) && t >= 0 && t <= MAX_GAME_MS).map((t) => Math.round(t * 10) / 10) : undefined;
+  const taps = times(g.taps);
+  const holds = times(g.holds);
+  if (!taps && !holds) return undefined;
+  return { taps, holds, early: isNum(g.early) ? Math.max(0, Math.min(50, Math.round(g.early))) : 0 };
 }
 
 export function sanitizeTelemetry(value: unknown): AnswerTelemetry {
@@ -105,6 +119,7 @@ export function sanitizeTelemetry(value: unknown): AnswerTelemetry {
     scrolls: isNum(r.scrolls) ? Math.max(0, Math.min(100_000, Math.round(r.scrolls))) : 0,
     touches: isNum(r.touches) ? Math.max(0, Math.min(100_000, Math.round(r.touches))) : 0,
     strokes,
+    game: sanitizeGame(r.game),
     env: sanitizeEnv(r.env),
   };
 }

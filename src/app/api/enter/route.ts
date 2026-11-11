@@ -1,4 +1,6 @@
+import { after } from "next/server";
 import { enter } from "@/lib/game";
+import { restockQuestions } from "@/lib/interview";
 import { clientAddress, optionalString, readJsonBody, respond } from "@/lib/http";
 import { currentPlayer, ensureDeviceId } from "@/lib/session";
 
@@ -9,6 +11,8 @@ import { currentPlayer, ensureDeviceId } from "@/lib/session";
 export async function POST(request: Request) {
   return respond(async () => {
     const body = await readJsonBody(request);
+    // An opening question has just been used: write more, after replying, if the store is running low.
+    after(() => restockQuestions().catch((err) => console.error("[questions] could not restock:", err)));
     return enter({
       handle: optionalString(body.handle) ?? "",
       wallet: optionalString(body.wallet),
@@ -24,3 +28,6 @@ export async function POST(request: Request) {
     });
   });
 }
+
+// Writing the opening question can wait on the model, and the store of questions is topped up after the reply.
+export const maxDuration = 120;

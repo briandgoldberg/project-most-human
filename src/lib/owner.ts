@@ -1,10 +1,17 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { agentKeysForOwner } from "./agents";
 import { config, ownerPassword } from "./config";
-import { GameError, debriefDue, prizesOwed, recentAgents } from "./game";
-import { humanPool } from "./hunt";
+import { CONSENT_VERSION, GameError, debriefDue, prizesOwed, recentAgents, roundIdFor } from "./game";
+import { clearHuntCache, humanPool } from "./hunt";
+import { nextQuestion, restockQuestions } from "./interview";
+import { judgeEntry } from "./judge";
 import { MIN_EXAMPLES_PER_CLASS, topWeights, trainModel, type BehaviorModel } from "./judge/model";
-import { readHuntRecords, readModelFile, readTraining, writeModelFile } from "./store";
+import { BANK } from "./questions";
+import { checkAnswer } from "./rules";
+import { appendTraining, readBans, readHuntRecords, readModelFile, readTraining, readUsage, updateBans, updatePlayer, writeModelFile, type UsageRecord } from "./store";
+import { aggregateFeatures, deviceOf, extractAnswerFeatures, typingGaps } from "./telemetry/features";
+import { sanitizeTelemetry } from "./telemetry/sanitize";
+import type { Question } from "./types";
 
 /**
  * The owner's page: who may open it, what it shows, and the judge's
@@ -111,6 +118,12 @@ export async function ownerSummary() {
       wonAt: e.prize!.wonAt,
     })),
     agentKeys: keys,
+    usage: await usageSummary(),
+    banned: Object.entries(await readBans())
+      .map(([id, ban]) => ({ id, ...ban }))
+      .sort((x, y) => y.at - x.at),
+    banAfterStrikes: cfg.banAfterStrikes,
+    seeds: examples.filter((e) => e.source === "seed").length,
     // What agents that fooled the judge said about how, newest first, and the ones still to answer.
     debriefs: (await recentAgents(30))
       .filter((e) => e.debrief)
@@ -130,6 +143,140 @@ export async function ownerSummary() {
         lessons: e.debrief!.lessons,
       })),
   };
+}
+
+/** The chores done after a response has gone out: retrain if it is time, and top up the store of questions. */
+export async function housekeeping(): Promise<void> {
+  await retrainIfDue().catch((err) => console.error("[retrain] failed:", err));
+  await restockQuestions().catch((err) => console.error("[questions] could not restock:", err));
+}
+
+// --- What the game spends on Claude ---------------------------------------------
+
+/** Dollars per million tokens, in and out, for the models the game is usually run on. Cache reads cost a twentieth of input; writes a quarter more. */
+const PRICES: Record<string, [number, number]> = {
+  "claude-opus-5-5": [4, 20],
+  "claude-sonnet-5-5": [2, 10],
+  "claude-haiku-5-5": [0.1, 0.5],
+};
+
+function tally(calls: UsageRecord[]) {
+  const by = new Map<string, { calls: number; input: number; output: number; cached: number; dollars: number | null }>();
+  for (const u of calls) {
+    const row = by.get(u.purpose) ?? { calls: 0, input: 0, output: 0, cached: 0, dollars: 0 };
+    const price = Object.entries(PRICES).find(([id]) => u.model.startsWith(id))?.[1];
+    const cost = price ? (u.input * price[0] + u.output * price[1] + u.cacheRead * price[0] * 0.05 + u.cacheWrite * price[0] * 1.25) / 1e6 : null;
+    by.set(u.purpose, {
+      calls: row.calls + 1,
+      input: row.input + u.input + u.cacheWrite,
+      output: row.output + u.output,
+      cached: row.cached + u.cacheRead,
+      dollars: row.dollars === null || cost === null ? null : row.dollars + cost,
+    });
+  }
+  return [...by].map(([purpose, row]) => ({ purpose, ...row })).sort((a, b) => b.input + b.output - (a.input + a.output));
+}
+
+/** What the game has used of the model, today and over the last week, by what it was for. */
+async function usageSummary() {
+  const week = await readUsage(7);
+  const startOfToday = new Date(new Date().toISOString().slice(0, 10)).getTime();
+  return { today: tally(week.filter((u) => u.at >= startOfToday)), week: tally(week), ceiling: config().llmDailyTokens };
+}
+
+// --- Bans ---------------------------------------------------------------------
+
+/** Lift a ban and wipe the strikes behind it. */
+export async function liftBan(id: unknown): Promise<void> {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) throw new GameError(400, "bad_id", "Unknown account");
+  await updatePlayer(id, (p) => {
+    p.banned = undefined;
+    p.strikes = [];
+  });
+  await updateBans((bans) => void delete bans[id]);
+}
+
+// --- The training area: seeding real answers ------------------------------------
+
+/** How the trainer is asked to answer, so the store of real answers has the range real players have. */
+const DEPTHS = [
+  { id: "long", ask: "Go long on this one: three or four sentences, with detail." },
+  { id: "normal", ask: "Answer how you normally would." },
+  { id: "short", ask: "Keep this one short and lazy: a few words." },
+] as const;
+type Depth = (typeof DEPTHS)[number]["id"];
+
+/**
+ * The next question for whoever is training. The built-in bank is worked
+ * through first, then questions are drawn from the same store the game uses,
+ * so there is always another one.
+ */
+export async function nextSeedQuestion() {
+  const seeds = (await readTraining()).filter((e) => e.source === "seed");
+  const answered = new Set(seeds.flatMap((e) => e.questions.map((q) => q.prompt)));
+  const style = seeds.length % 3 === 2 ? "wild" : "you";
+  const unused = BANK[style].filter((q) => !answered.has(q.prompt));
+  const question = unused.length
+    ? unused[Math.floor(Math.random() * unused.length)]
+    : await nextQuestion(style === "wild" ? "wild" : "fresh", []);
+  // Mostly ordinary answers, with a good share of long and of lazy ones.
+  const roll = Math.random();
+  const depth = DEPTHS[roll < 0.3 ? 0 : roll < 0.7 ? 1 : 2];
+  return {
+    question: { prompt: question.prompt, category: question.category, style },
+    depth: { id: depth.id, ask: depth.ask },
+    answered: seeds.length,
+    pool: (await humanPool()).length,
+  };
+}
+
+/**
+ * Take one answer from the training area: a real person's answer, typed and
+ * recorded like a player's. It joins the answers players hunt with and the
+ * human examples the judge learns from. `person` keeps the trainer from being
+ * shown their own answers when they play.
+ */
+export async function saveSeedAnswer(input: { prompt: unknown; category: unknown; depth: unknown; text: unknown; telemetry: unknown; person?: string }) {
+  const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, 300) : "";
+  if (prompt.length < 8) throw new GameError(400, "bad_question", "That question didn't come through. Skip to the next one.");
+  const depth: Depth = DEPTHS.some((d) => d.id === input.depth) ? (input.depth as Depth) : "normal";
+  const text = typeof input.text === "string" ? input.text.trim() : "";
+  const telemetry = sanitizeTelemetry(input.telemetry);
+  const question: Question = { id: `seed-${randomBytes(6).toString("base64url")}`, kind: "text", category: typeof input.category === "string" ? input.category.slice(0, 24) : "seed", prompt, shortOk: depth === "short" };
+  const broken = checkAnswer(question, text);
+  if (broken) throw new GameError(400, "answer_rejected", broken);
+  const features = extractAnswerFeatures("text", text, telemetry);
+  // The recording is the point: an answer that wasn't typed here teaches the judge the wrong thing about people.
+  if (features.pastedChars > text.length * 0.2 || features.typedChars < text.length * 0.5) {
+    throw new GameError(400, "not_typed", "Type it out here rather than pasting. How it is typed is what the game learns from.");
+  }
+  const took = Math.max(0, telemetry.submittedAt - telemetry.shownAt);
+  const answer = { questionId: question.id, text, answeredAt: Date.now(), serverLatencyMs: took, features };
+  const all = aggregateFeatures([answer], telemetry.env, telemetry.env?.ua);
+  // What the judge would have made of it, from behaviour alone. No model call: training costs nothing.
+  const judge = await judgeEntry([question], { id: question.id, answers: [answer] }, all, { useLlm: false });
+  const gaps = typingGaps(telemetry);
+  await appendTraining({
+    entryId: question.id,
+    roundId: roundIdFor(),
+    recordedAt: Date.now(),
+    label: "human",
+    cohortId: "trainers",
+    source: "seed",
+    handle: "trainer",
+    player: input.person,
+    device: telemetry.env ? deviceOf(telemetry.env) : undefined,
+    consent: CONSENT_VERSION,
+    questions: [question],
+    answers: [{ questionId: question.id, text, serverLatencyMs: took, features, gaps: gaps.length ? gaps : undefined }],
+    features: all,
+    env: telemetry.env,
+    judge,
+    judgeCorrect: judge.verdict === "human",
+    telemetry: { [question.id]: telemetry },
+  });
+  clearHuntCache();
+  return { saved: true as const, judged: judge.score, next: await nextSeedQuestion() };
 }
 
 // --- The judge teaching itself -----------------------------------------------

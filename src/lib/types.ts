@@ -1,12 +1,22 @@
 /** Ground truth for a participant. The judge never sees this before scoring. */
 export type Kind = "human" | "agent";
 
-export type QuestionKind = "text" | "draw";
+/**
+ * What a question asks for: typed words, a drawing, or a mini-game.
+ * "tap": tap the moment a light comes on, several times. "hold": hold a button
+ * down for a stated time with no clock to go by.
+ */
+export type QuestionKind = "text" | "draw" | "tap" | "hold";
 
 export type Device = "phone" | "tablet" | "desktop";
 
 /** One step of a game: a question to answer, or a Bot Hunter round. */
-export type StepKind = "fresh" | "followup" | "draw" | "hunt";
+/**
+ * "fresh": a question about the player's own life. "wild": an imaginative one.
+ * "followup": about their last answer. "game": a mini-game or a drawing.
+ * "draw" is an older name for a drawing step.
+ */
+export type StepKind = "fresh" | "wild" | "followup" | "game" | "draw" | "hunt";
 
 /**
  * How one answer was produced, in the terms the judge itself works from. Shown
@@ -28,6 +38,18 @@ export interface Evidence {
   pasted: number;
   /** How often one key went down before the last came up, 0 to 1. Fingers do this; scripts mostly don't. */
   keyOverlap: number | null;
+  /** The pause before each keystroke, in ms, in order: the rhythm of the typing, drawn for the hunter as a strip. */
+  gaps?: number[];
+  /** The longest stop mid-answer. */
+  longestPauseMs?: number | null;
+  /** How long keys were held down, on average. */
+  keyHoldMs?: number | null;
+  /** Whether the mouse or a finger moved about while the answer was being written. */
+  pointerMoved?: boolean | null;
+  /** How many times they left the page or the answer box mid-answer. */
+  leftPage?: number;
+  /** From seeing the question to sending the answer. */
+  totalMs?: number | null;
 }
 
 /**
@@ -61,6 +83,10 @@ export interface Question {
   category: string;
   prompt: string;
   hint?: string;
+  /** Text questions: a word or two is a natural answer to this one. Otherwise an answer that short is sent back. */
+  shortOk?: boolean;
+  /** Mini-games: how this one is set up. The server decides, so a script can't pick easy numbers. */
+  game?: GameSpec;
   /**
    * A line addressed to machines, placed in the page where people can't see it.
    * A person never reads it; an agent reading the page's text does, and one
@@ -69,6 +95,25 @@ export interface Question {
   note?: string;
   /** The phrase the note asks for. Kept on the server; never sent on its own. */
   canary?: string;
+}
+
+/** How a mini-game is set up. */
+export interface GameSpec {
+  /** Reaction game: how long each go waits before the light comes on, in ms. */
+  waits?: number[];
+  /** Timing game: how long to hold for, in ms, and how many tries. */
+  holdMs?: number;
+  tries?: number;
+}
+
+/** What the player did in a mini-game. */
+export interface GamePlay {
+  /** Reaction game: per go, ms from the light coming on to the tap. */
+  taps?: number[];
+  /** Reaction game: how many times they tapped before the light. */
+  early?: number;
+  /** Timing game: how long each hold lasted, in ms. */
+  holds?: number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +165,8 @@ export interface AnswerTelemetry {
   touches: number;
   /** Draw questions only. */
   strokes?: StrokePoint[][];
+  /** Mini-games only. */
+  game?: GamePlay;
   env?: ClientEnv;
 }
 
@@ -161,6 +208,13 @@ export interface AnswerFeatures {
   drawMs: number | null;
   drawSpeedCv: number | null;
   drawJitter: number | null;
+  /** Reaction game: typical reaction, how much it varied, and taps made too early. Absent on answers from before the games existed. */
+  tapMedian?: number | null;
+  tapCv?: number | null;
+  tapEarly?: number;
+  /** Timing game: how far off the target the holds were on average (0.1 = 10%), and how much they varied. */
+  holdError?: number | null;
+  holdCv?: number | null;
 }
 
 /** Entry-level feature vector: what the behaviour model and the judge see. */
@@ -197,6 +251,10 @@ export interface EntryAnswer {
   serverLatencyMs: number;
   /** The answer contains the phrase only a machine was asked for. */
   trapped?: boolean;
+  /** Mini-games: what the player did, in words, for the judge to read. */
+  played?: string;
+  /** Typed answers: the pause before each keystroke, in ms, in order. What a hunter is shown as the rhythm of the typing. */
+  gaps?: number[];
   features: AnswerFeatures;
 }
 
@@ -272,6 +330,10 @@ export interface Entry {
   prize?: Prize;
   /** What it would have won, had there been an address to pay or had that address not already won today. */
   missedPrize?: { tokens: number; why: "no_address" | "already_won" };
+  /** How many answers were sent back for breaking the rules of play. */
+  rejections?: number;
+  /** Players whose game was broken off for breaking the rules: where that leaves their account. */
+  strike?: { count: number; limit: number; banned: boolean };
   /** Agents that fooled the judge: the questions put to them afterwards, and what they said. */
   debrief?: Debrief;
   prizeEligible: boolean;
@@ -376,14 +438,14 @@ export interface TrainingExample {
    * player the judge was confident about, taken to be human. "board": an older
    * entry the owner labelled by hand.
    */
-  source?: "session" | "board" | "auto";
+  source?: "session" | "board" | "auto" | "seed";
   handle: string;
   /** Who this was, as far as the game can tell them from others: a hash of their account, or else of their browser's cookie. */
   player?: string;
   device?: Device;
   consent?: string;
   questions: Question[];
-  answers: { questionId: string; text: string; serverLatencyMs: number; features: AnswerFeatures }[];
+  answers: { questionId: string; text: string; serverLatencyMs: number; features: AnswerFeatures; played?: string; gaps?: number[] }[];
   features: Features;
   env?: ClientEnv;
   /** What the judge said before the label was revealed. */

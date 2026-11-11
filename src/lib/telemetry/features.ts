@@ -6,6 +6,7 @@ import type {
   Features,
   PointerEv,
   QuestionKind,
+  GameSpec,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -124,7 +125,19 @@ export function pathStats(points: PointerEv[], gapMs = 120): PathStats {
   };
 }
 
-export function extractAnswerFeatures(kind: QuestionKind, text: string, raw: AnswerTelemetry): AnswerFeatures {
+export function extractAnswerFeatures(kind: QuestionKind, text: string, raw: AnswerTelemetry, spec?: GameSpec): AnswerFeatures {
+  // --- Mini-games -----------------------------------------------------------
+  const taps = kind === "tap" ? (raw.game?.taps ?? []) : [];
+  const holds = kind === "hold" ? (raw.game?.holds ?? []) : [];
+  const target = spec?.holdMs ?? 0;
+  const game = {
+    tapMedian: round(median(taps), 1),
+    tapCv: taps.length >= 3 ? round(cv(taps)) : null,
+    tapEarly: kind === "tap" ? (raw.game?.early ?? 0) : 0,
+    holdError: holds.length && target > 0 ? round(mean(holds.map((h) => Math.abs(h - target) / target))) : null,
+    holdCv: holds.length >= 2 ? round(cv(holds)) : null,
+  };
+
   const inputs = raw.inputs ?? [];
   const keys = raw.keys ?? [];
   const pointer = raw.pointer ?? [];
@@ -237,7 +250,22 @@ export function extractAnswerFeatures(kind: QuestionKind, text: string, raw: Ans
     drawMs,
     drawSpeedCv: drawStats.speedCv,
     drawJitter: drawStats.jitter,
+    ...game,
   };
+}
+
+const MAX_GAPS = 80;
+
+/**
+ * The pause before each keystroke of a typed answer, in order: the rhythm of
+ * the typing, as a hunter is shown it. Long thinks are capped so one doesn't
+ * flatten the rest of the picture.
+ */
+export function typingGaps(raw: AnswerTelemetry): number[] {
+  const times = (raw.inputs ?? []).filter(([, type]) => type.startsWith("insert") && !isPaste(type)).map(([t]) => t);
+  const gaps: number[] = [];
+  for (let i = 1; i < times.length && gaps.length < MAX_GAPS; i++) gaps.push(Math.max(0, Math.min(4000, Math.round(times[i] - times[i - 1]))));
+  return gaps;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +328,11 @@ export const FEATURE_KEYS = [
   "drawSpeedCv",
   "drawJitter",
   "drawMs",
+  "tapMedian",
+  "tapCv",
+  "tapEarly",
+  "holdError",
+  "holdCv",
   "ansLenMean",
   "ansLenCv",
   "formalRatio",
@@ -382,6 +415,11 @@ export function aggregateFeatures(answers: AnswerForAggregation[], env?: ClientE
     drawSpeedCv: avg((x) => x.drawSpeedCv, draw.map((a) => a.features)),
     drawJitter: avg((x) => x.drawJitter, draw.map((a) => a.features)),
     drawMs: avg((x) => x.drawMs, draw.map((a) => a.features)),
+    tapMedian: avg((x) => x.tapMedian ?? null, all),
+    tapCv: avg((x) => x.tapCv ?? null, all),
+    tapEarly: all.some((x) => x.kind === "tap") ? sum((x) => x.tapEarly ?? 0, all) : null,
+    holdError: avg((x) => x.holdError ?? null, all),
+    holdCv: avg((x) => x.holdCv ?? null, all),
     ansLenMean: mean(lens),
     ansLenCv: lens.length >= 3 ? cv(lens) : null,
     formalRatio: texts.length ? formal / texts.length : null,

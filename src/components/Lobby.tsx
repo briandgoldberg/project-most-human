@@ -154,6 +154,22 @@ function Door({ summary, me, onMe }: { summary: HumanSummary; me: Me | null; onM
     </p>
   );
 
+  if (me.banned) {
+    return (
+      <div className="space-y-3">
+        <div className="border border-pulse p-4">
+          <h2 className="font-display text-2xl">This account is banned</h2>
+          <p className="mt-2 max-w-md text-sm text-dim">
+            Too many of its games were ended for breaking the rules: bots, pasted answers and the like. If that&rsquo;s a
+            mistake, get in touch with whoever runs the site.
+          </p>
+        </div>
+        <Balance summary={summary} me={me} onMe={onMe} />
+        {account}
+      </div>
+    );
+  }
+
   if (!me.canPlay) {
     return (
       <div className="space-y-3">
@@ -232,7 +248,7 @@ export function Lobby() {
 
           <section className="grid gap-x-6 gap-y-3 border-t border-line pt-5 text-sm text-dim sm:grid-cols-3">
             <p>
-              <span className="text-paper">Be human.</span> Answer a few questions for the AI judge.
+              <span className="text-paper">Be human.</span> Answer questions and play quick games for the AI judge.
             </p>
             <p>
               <span className="text-paper">Hunt.</span> Pick the person&rsquo;s answer, not the machine&rsquo;s.

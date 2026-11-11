@@ -21,6 +21,15 @@ export interface HumanSummary {
   board: { handle: string; cleared: number; rounds: number; score: number; quip: string; won?: number; wallet?: string }[];
 }
 
+/** One turn in the training area: a question, and how thoroughly to answer it. */
+export interface SeedTurn {
+  question: { prompt: string; category: string; style: "you" | "wild" };
+  depth: { id: "long" | "normal" | "short"; ask: string };
+  /** Answers given in the training area so far, and real answers available to hunt with. */
+  answered: number;
+  pool: number;
+}
+
 /** Who is at this browser on the human side. */
 export interface Me {
   signedIn: boolean;
@@ -29,6 +38,9 @@ export interface Me {
   handle?: string;
   /** False once they have judged nearly every real answer there is. */
   canPlay: boolean;
+  /** Banned for breaking the rules, and how many games of theirs have been ended for it. */
+  banned: boolean;
+  strikes: number;
   /** Prizes won and not yet sent. */
   balance: number;
   /** Where they have asked for their balance to be sent. */
@@ -46,6 +58,8 @@ export interface AgentSummary {
   fooled: number;
   /** The builders whose agents have won the most in the last month. */
   top: { builder: string; won: number; wins: number }[];
+  /** The judge that is doing the scoring: it retrains as it sees more runs. */
+  judge: { version: string; trainedAt: number | null; trainedOn: number };
   board: { handle: string; builder: string; house: boolean; score: number; quip: string; fooled: boolean; won?: number; debriefed?: boolean }[];
 }
 
@@ -86,6 +100,11 @@ export interface PlayerResult {
   impostor?: { fooled: boolean };
   prize?: { tokens: number; symbol: string; payable: boolean; held?: boolean; banked?: boolean };
   debrief?: { questions: string[]; done: boolean };
+  /** Agents: how the score was arrived at. */
+  why?: { behaviour: number; judge?: number; reasons: string[]; reasoning?: string; judgeVersion?: string; trainedAt?: number };
+  /** Players whose game was ended for breaking a rule: which, and where that leaves their account. */
+  brokeRule?: string;
+  strike?: { count: number; limit: number; banned: boolean };
 }
 
 export type Progress = (
@@ -113,6 +132,16 @@ export interface OwnerSummary {
   huntPool: { answers: number; people: number };
   symbol: string;
   prizesOwed: { id: string; handle: string; reason: "hunter" | "fooled"; tokens: number; wallet: string | null; wonAt: number }[];
+  /** What the game has used of Claude, by what it was for. `input` excludes what was read from cache. */
+  usage: {
+    today: { purpose: string; calls: number; input: number; output: number; cached: number; dollars: number | null }[];
+    week: { purpose: string; calls: number; input: number; output: number; cached: number; dollars: number | null }[];
+    ceiling: number;
+  };
+  banned: { id: string; at: number; reason: string; handle?: string }[];
+  banAfterStrikes: number;
+  /** Answers given in the training area so far. */
+  seeds: number;
   debriefs: {
     id: string;
     handle: string;
@@ -190,6 +219,16 @@ export const api = {
     logout: () => call<{ ok: true }>("/api/owner/logout", {}),
     setAgentKey: (id: string, change: { disabled?: boolean; house?: boolean }) =>
       call<{ ok: true }>("/api/owner/agent-key", { id, ...change }),
+    liftBan: (id: string) => call<{ ok: true }>("/api/owner/player", { id }),
+    seedQuestion: () => call<SeedTurn>("/api/owner/seed"),
+    seedAnswer: (turn: SeedTurn, text: string, telemetry: AnswerTelemetry) =>
+      call<{ saved: true; judged: number; next: SeedTurn }>("/api/owner/seed", {
+        prompt: turn.question.prompt,
+        category: turn.question.category,
+        depth: turn.depth.id,
+        text,
+        telemetry,
+      }),
   },
 };
 

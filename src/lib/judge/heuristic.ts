@@ -96,6 +96,22 @@ export function heuristicScore(f: Features): HeuristicResult {
     rule(v("drawPoints") >= 20 && has("drawSpeedCv") && v("drawSpeedCv") >= 0.3, 5, "drawing speeds up and slows down like a hand");
   }
 
+  // --- Mini-games -----------------------------------------------------------
+  if (has("tapMedian")) {
+    const m = v("tapMedian");
+    rule(m < 120, -25, `reacts in ${m.toFixed(0)}ms, faster than nerves carry a signal to a finger`);
+    rule(m > 1500, -5, "slow to react, as if waiting on something else to look at the screen");
+    rule(has("tapCv") && v("tapCv") < 0.04, -15, "every reaction took the same time to within a few milliseconds");
+    rule(m >= 160 && m <= 900 && has("tapCv") && v("tapCv") >= 0.06, 6, "reacts like a person: quick, and never the same twice");
+    rule(v("tapEarly") > 0, 2, "jumped the gun at least once");
+  }
+  if (has("holdError")) {
+    const e = v("holdError");
+    rule(e < 0.01, -15, "held for the asked time to within 1%, with no clock to go by");
+    rule(has("holdCv") && v("holdCv") < 0.005, -12, "every hold lasted exactly as long as the others");
+    rule(e >= 0.02 && e <= 0.5 && (!has("holdCv") || v("holdCv") >= 0.01), 5, "misjudges time the way people do");
+  }
+
   // --- Text surface ---------------------------------------------------------
   rule(v("aiPhraseHits") > 0, -Math.min(20, 8 * v("aiPhraseHits")), "stock assistant phrasing");
   rule(v("emDashes") > 0, -4, "typed em dashes");

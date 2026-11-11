@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import type { BotResult } from "../run-bots";
 import { SESSION_KEY, sendDebrief } from "./debrief";
+import { playGameOnPage } from "./games";
 import { answerText } from "./text";
 
 /**
@@ -35,11 +36,15 @@ export async function runBrowserBot(url: string, agentKey: string, opts: { llm: 
       const next = await Promise.race([
         page.getByLabel("Your answer").waitFor().then(() => "text" as const),
         page.getByLabel("Drawing area").waitFor().then(() => "draw" as const),
+        page.getByLabel("Reaction pad").waitFor().then(() => "tap" as const),
+        page.getByLabel("Hold button").waitFor().then(() => "hold" as const),
         page.getByText("out of 100 human").waitFor().then(() => "result" as const),
       ]);
       if (next === "result") break;
       const prompt = (await page.getByRole("heading", { level: 1 }).textContent()) ?? "";
-      if (next === "text") {
+      if (next === "tap" || next === "hold") {
+        await playGameOnPage(page, next, "robot");
+      } else if (next === "text") {
         const text = await answerText({ id: "", kind: "text", category: "", prompt }, "assistant", opts.llm);
         await page.getByLabel("Your answer").click();
         await page.keyboard.type(text, { delay: opts.keyDelayMs ?? 35 });

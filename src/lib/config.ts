@@ -50,6 +50,10 @@ export function config() {
      * one account, one player. Unset, anyone can play and a browser cookie stands in for the account.
      */
     googleClientId: env("GOOGLE_CLIENT_ID"),
+    /** How many games broken off for breaking the rules (pasting, automation and the like) get an account banned. */
+    banAfterStrikes: num("BAN_AFTER_STRIKES", 3),
+    /** A ceiling on Claude tokens (in and out) per day. Past it the game runs on its question bank and the behaviour judge alone. 0 = no ceiling. */
+    llmDailyTokens: num("LLM_DAILY_TOKENS", 0),
     /** "on" lets a player be shown real answers they have already judged. Off by default: when they run out, they wait for more. */
     huntRepeats: (env("HUNT_REPEATS") ?? "off") as "on" | "off",
     /** What a player wins for being judged human, and what each hunting round they clear adds, in order. */

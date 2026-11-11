@@ -1,8 +1,10 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "./config";
 import { GameError, HUMAN_AT, debriefDue, recentAgents, roundIdFor } from "./game";
+import { JUDGE_VERSION } from "./judge";
+import type { BehaviorModel } from "./judge/model";
 import { isValidAddress } from "./payments/address";
-import { readAgentKeys, readRound, updateAgentKeys } from "./store";
+import { readAgentKeys, readModelFile, readRound, updateAgentKeys } from "./store";
 import type { AgentKey } from "./types";
 
 /**
@@ -72,7 +74,7 @@ const TOP_ROWS = 5;
 
 export async function agentSummary() {
   const cfg = config();
-  const [agents, month, keys] = await Promise.all([recentAgents(), recentAgents(TOP_DAYS), readAgentKeys()]);
+  const [agents, month, keys, model] = await Promise.all([recentAgents(), recentAgents(TOP_DAYS), readAgentKeys(), readModelFile<BehaviorModel>()]);
   // What each builder's agents have won lately. A prize counts once the agent has explained itself.
   const winnings = new Map<string, { won: number; wins: number }>();
   for (const e of month) {
@@ -93,6 +95,8 @@ export async function agentSummary() {
     cluster: cfg.paymentMode === "solana" ? cfg.solana.cluster : undefined,
     runs: agents.length,
     fooled: agents.filter((e) => e.result!.score >= HUMAN_AT).length,
+    // The judge keeps learning, so the same agent can score differently from one week to the next.
+    judge: { version: JUDGE_VERSION, trainedAt: model?.trainedAt ?? null, trainedOn: model ? model.examples.human + model.examples.agent : 0 },
     board: agents.slice(0, 50).map((e) => ({
       handle: e.handle,
       builder: keys[e.agentKeyId!]?.name ?? "unknown",

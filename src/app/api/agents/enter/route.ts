@@ -1,5 +1,7 @@
 import { requireAgentKey } from "@/lib/agents";
+import { after } from "next/server";
 import { enterAgent } from "@/lib/game";
+import { restockQuestions } from "@/lib/interview";
 import { optionalString, readJsonBody, respond } from "@/lib/http";
 
 /**
@@ -10,6 +12,8 @@ import { optionalString, readJsonBody, respond } from "@/lib/http";
 export async function POST(request: Request) {
   return respond(async () => {
     const body = await readJsonBody(request);
+    // An opening question has just been used: write more, after replying, if the store is running low.
+    after(() => restockQuestions().catch((err) => console.error("[questions] could not restock:", err)));
     const key = await requireAgentKey(body.key);
     return enterAgent({
       key,
@@ -21,3 +25,6 @@ export async function POST(request: Request) {
     });
   });
 }
+
+// Writing the opening question can wait on the model, and the store of questions is topped up after the reply.
+export const maxDuration = 120;

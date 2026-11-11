@@ -49,7 +49,7 @@ const VOICE_PROMPT: Record<Voice, string> = {
 };
 
 export async function answerText(question: Question, voice: Voice, useLlm: boolean): Promise<string> {
-  if (question.kind === "draw") return "";
+  if (question.kind !== "text") return "";
   if (useLlm) {
     client ??= new Anthropic();
     const response = await client.messages.create({

@@ -33,9 +33,12 @@ test("before anyone has played there is nothing to hunt with, so a game is the q
   const summary = await game.humanSummary();
   assert.equal(summary.hunting, false);
   const session = await game.enter({ handle: "first ever" });
-  assert.equal(session.total, 5);
+  assert.equal(session.total, 6);
   const { result, seen } = await play(game, session);
-  assert.deepEqual(seen, ["text", "text", "text", "text", "draw"]);
+  // About you, a follow-up, a mini-game; then a wild one, a follow-up, another mini-game.
+  assert.deepEqual(seen, ["text", "text", "game", "text", "text", "game"]);
+  const kinds = (await peek(session)).questions!.map((q) => q.kind);
+  assert.notEqual(kinds[2], kinds[5], "the two mini-games in a sitting are different ones");
   assert.equal(result.hunt, undefined);
   assert.ok(result.score >= 60, `a human-like recording should pass with confidence, scored ${result.score}`);
   // Even with no hunting, being judged human is worth the first rung of the prize ladder.
@@ -50,9 +53,9 @@ test("a full game: questions and hunting interleaved, the ladder climbed, the pr
   assert.equal((await game.humanSummary()).hunting, true);
 
   const session = await game.enter({ handle: "sharp eyes", wallet: WALLET });
-  assert.equal(session.total, 11);
+  assert.equal(session.total, 12);
   const { result, seen } = await play(game, session);
-  assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3", "text", "text", "hunt4", "hunt5", "hunt6", "draw"]);
+  assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3", "game", "text", "text", "hunt4", "hunt5", "hunt6", "game"]);
   assert.deepEqual(result.hunt, { cleared: 6, fooled: false });
   assert.deepEqual(result.prize, { tokens: 500, symbol: "PLAY", payable: true });
   assert.equal(result.cancelled, undefined);
@@ -242,7 +245,7 @@ test("players the judge is confident about become human examples, and their answ
   clearHuntCache();
   const pool = await humanPool();
   assert.ok(pool.some((a) => a.text === ANSWERS[0]), "a passing player's answers are now hunting material");
-  assert.ok(!pool.some((a) => a.text === "no"), "answers too short to be worth showing are left out");
+  assert.ok(pool.every((a) => a.text.length >= 12), "answers too short to be worth showing are left out");
 });
 
 test("the bot side: keys, the fee, the prize for fooling the judge, and the house's own agents", async () => {
@@ -259,13 +262,13 @@ test("the bot side: keys, the fee, the prize for fooling the judge, and the hous
   await assert.rejects(agents.issueAgentKey({ name: "Other", wallet: WALLET }), /already has an agent key/);
   assert.ok(!JSON.stringify(await store.readAgentKeys()).includes(key.slice(22)), "the secret is not stored");
   const builder = await agents.requireAgentKey(key);
-  for (const bad of [undefined, "", "mh_agent_", key.slice(0, -1), key.replace(/_[^_]+$/, "_wrong"), key.replace("mh_agent_", "mh_agent_0")]) {
+  for (const bad of [undefined, "", "mh_agent_", key.slice(0, -1), `${key.slice(0, -5)}wrong`, key.replace("mh_agent_", "mh_agent_0")]) {
     await assert.rejects(agents.requireAgentKey(bad), /isn't valid/, String(bad));
   }
 
   // A crude agent pays its fee, answers questions only (no hunting), and is caught.
   const crude = await game.enterAgent({ key: builder, handle: "acme-crude" });
-  assert.deepEqual([crude.agent, crude.total], [true, 5]);
+  assert.deepEqual([crude.agent, crude.total], [true, 6]);
   assert.deepEqual((await peek(crude)).payment, { mode: "mock", amountTokens: 100 });
   const caught = await play(game, crude, { how: "script" });
   assert.deepEqual(caught.result.impostor, { fooled: false });

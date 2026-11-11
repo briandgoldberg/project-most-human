@@ -58,6 +58,47 @@ const TEXT_BANK: Omit<Question, "id" | "kind">[] = [
   { category: "meta", prompt: "What would a bot get wrong about answering this question?" },
 ];
 
+/**
+ * The other kind of question: nothing to do with the player's day, everything
+ * to do with how they think. No right answers; people answer these in their
+ * own voice, and something averaging everyone's voice answers them blandly.
+ */
+const WILD_BANK: Omit<Question, "id" | "kind">[] = [
+  { category: "wild", prompt: "Invent a holiday nobody asked for. What do people do on it, and what goes wrong every year?" },
+  { category: "wild", prompt: "A pigeon is now your boss. What's the first thing it changes at work?" },
+  { category: "wild", prompt: "Pick a vegetable to be mayor of your town and say what it would ban." },
+  { category: "wild", prompt: "You can only speak in rhymes for a day. What's the hardest errand?" },
+  { category: "wild", prompt: "What would the furniture in your home complain about if it could talk?" },
+  { category: "wild", prompt: "Design the worst possible theme park ride. What is it called?" },
+  { category: "wild", prompt: "Your shadow quits. What was its last straw?" },
+  { category: "wild", prompt: "Rank these from most to least trustworthy and defend it: a goose, a vending machine, a clown." },
+  { category: "wild", prompt: "You get one useless superpower. Which one, and how do you still manage to misuse it?" },
+  { category: "wild", prompt: "Describe the colour blue to someone who is annoyed with you." },
+  { category: "wild", prompt: "What's the national anthem of your kitchen? Give me the first line." },
+  { category: "wild", prompt: "A ghost haunts you but only does mildly helpful things. Like what?" },
+  { category: "wild", prompt: "Rename a day of the week so it's more honest about itself." },
+  { category: "wild", prompt: "If your last meal filed a complaint about you, what would it say?" },
+  { category: "wild", prompt: "Invent a sport for people who hate running. What are the rules?" },
+  { category: "wild", prompt: "The moon sends you a text. What does it say and do you reply?" },
+  { category: "wild", prompt: "What crime would a very polite dragon commit?" },
+  { category: "wild", prompt: "Sell me a single sock. Make it sound like a bargain." },
+  { category: "wild", prompt: "Which household object is secretly judging you, and for what?" },
+  { category: "wild", prompt: "You must add one rule to every board game ever. What is it?" },
+  { category: "wild", prompt: "Write the warning label that should come attached to you." },
+  { category: "wild", prompt: "Cats take over the internet for real this time. What's the first new law?" },
+  { category: "wild", prompt: "What would you put in a museum of small disappointments?" },
+  { category: "wild", prompt: "Describe your morning as if it were a nature documentary about a clumsy animal." },
+];
+
+/** Follow-ups for when no model is on hand to write one about the player's own answer. */
+const FOLLOWUP_BANK: Omit<Question, "id" | "kind">[] = [
+  { category: "followup", prompt: "Why that, of all things? Give me the real reason." },
+  { category: "followup", prompt: "Say more about that. What's the detail you left out?" },
+  { category: "followup", prompt: "What would someone who knows you well say about that answer?" },
+  { category: "followup", prompt: "How long has that been true, and what changed it?", shortOk: true },
+  { category: "followup", prompt: "What happened right after that?" },
+];
+
 const DRAW_BANK: Omit<Question, "id" | "kind">[] = [
   { category: "draw", prompt: "Draw a circle. Not a good one. Just a circle.", hint: "Mouse, trackpad or finger." },
   { category: "draw", prompt: "Sign your name, or a name you wish you had.", hint: "Mouse, trackpad or finger." },
@@ -117,6 +158,54 @@ export function randomTextQuestion(usedPrompts: string[], usedCategories: string
 
 export function randomDrawQuestion(): { category: string; prompt: string; hint?: string } {
   return DRAW_BANK[Math.floor(Math.random() * DRAW_BANK.length)];
+}
+
+/** One imaginative question from the bank that this session hasn't had. */
+export function randomWildQuestion(usedPrompts: string[]): { category: string; prompt: string } {
+  const unused = WILD_BANK.filter((q) => !usedPrompts.includes(q.prompt));
+  const pool = unused.length ? unused : WILD_BANK;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+export function randomFollowup(usedPrompts: string[]): { category: string; prompt: string; shortOk?: boolean } {
+  const unused = FOLLOWUP_BANK.filter((q) => !usedPrompts.includes(q.prompt));
+  const pool = unused.length ? unused : FOLLOWUP_BANK;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/** Every question in the bank of each style, for the training area to work through. */
+export const BANK = { you: TEXT_BANK, wild: WILD_BANK };
+
+// --- Mini-games ---------------------------------------------------------------
+
+const between = (lo: number, hi: number) => Math.round(lo + Math.random() * (hi - lo));
+
+/** The mini-games a "game" step can be. A drawing counts as one. */
+export const GAME_KINDS = ["draw", "tap", "hold"] as const;
+export type GameKind = (typeof GAME_KINDS)[number];
+
+/** Set up one mini-game. The waits and targets are picked here, on the server, and differ every time. */
+export function gameQuestion(kind: GameKind): Omit<Question, "id"> {
+  if (kind === "tap") {
+    return {
+      kind: "tap",
+      category: "game",
+      prompt: "Tap the circle the moment it lights up.",
+      hint: "Five goes. Don't jump the gun.",
+      game: { waits: Array.from({ length: 5 }, () => between(1200, 3600)) },
+    };
+  }
+  if (kind === "hold") {
+    const seconds = [2, 3, 4][Math.floor(Math.random() * 3)];
+    return {
+      kind: "hold",
+      category: "game",
+      prompt: `Hold the button down for exactly ${seconds} seconds, then let go.`,
+      hint: "Three tries. No clock: count in your head.",
+      game: { holdMs: seconds * 1000, tries: 3 },
+    };
+  }
+  return { ...randomDrawQuestion(), kind: "draw" };
 }
 
 export const BANK_SIZE = { text: TEXT_BANK.length, draw: DRAW_BANK.length };
