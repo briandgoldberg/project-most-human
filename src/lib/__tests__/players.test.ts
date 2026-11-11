@@ -161,6 +161,12 @@ test("prizes build up in a player's balance, and are sent once they say where", 
   const P5 = { id: "5".repeat(24), name: "Eve" };
   const before = (await game.prizesOwed()).length;
 
+  // Before they have played, their first name from Google will do as a handle, if it fits. After, it is what they last played as.
+  assert.equal((await game.whoAmI(P5, undefined)).handle, "Eve");
+  assert.equal((await game.whoAmI({ id: "6".repeat(24), name: "J" }, undefined)).handle, undefined);
+  assert.equal((await game.whoAmI({ id: "6".repeat(24), name: "Zoë" }, undefined)).handle, undefined);
+  assert.equal((await game.whoAmI(null, "a-browser-with-no-history")).handle, undefined);
+
   // Real tokens, and nobody is asked for an address to play.
   process.env.PAYMENT_MODE = "solana";
   try {
@@ -183,7 +189,7 @@ test("prizes build up in a player's balance, and are sent once they say where", 
     process.env.GOOGLE_CLIENT_ID = "x.apps.googleusercontent.com";
     await assert.rejects(game.saveWallet(null, "some-browser-cookie-id", WALLET), /Sign in with Google first/);
     delete process.env.GOOGLE_CLIENT_ID;
-    assert.deepEqual(await game.saveWallet(P5, undefined, ` ${WALLET} `), { signedIn: true, name: "Eve", canPlay: (await game.whoAmI(P5, undefined)).canPlay, balance: 100, wallet: WALLET });
+    assert.deepEqual(await game.saveWallet(P5, undefined, ` ${WALLET} `), { signedIn: true, name: "Eve", handle: "saver", canPlay: (await game.whoAmI(P5, undefined)).canPlay, balance: 100, wallet: WALLET });
     assert.equal((await readPlayer(P5.id))!.wallet, WALLET);
 
     // Now everything they have won is owed to that address, and so is what they win next.

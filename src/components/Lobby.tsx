@@ -31,14 +31,8 @@ function Board({ summary }: { summary: HumanSummary }) {
       {summary.board.slice(0, BOARD_ROWS).map((row, i) => (
         <li key={i} className="flex items-baseline gap-3 py-2 text-sm">
           <span className="min-w-0 flex-1 truncate">{row.handle}</span>
-          {row.won !== undefined && (
-            <span className="shrink-0 text-xs text-pulse">
-              {fmt(row.won)} {summary.symbol}
-            </span>
-          )}
-          {row.rounds > 0 && <span className="shrink-0 text-xs text-dim">round {row.cleared}</span>}
-          <span className="w-10 shrink-0 text-right tabular-nums" title="How human the judge found them, out of 100">
-            {row.score.toFixed(1)}
+          <span className={`shrink-0 tabular-nums ${row.won ? "text-pulse" : "text-dim"}`}>
+            {row.won ? `${fmt(row.won)} ${summary.symbol}` : "no prize"}
           </span>
         </li>
       ))}
@@ -133,7 +127,6 @@ function Door({ summary, me, onMe }: { summary: HumanSummary; me: Me | null; onM
 
   const account = me.signedIn && (
     <p className="text-xs text-dim">
-      Signed in as {me.name}.{" "}
       <button
         type="button"
         className="underline underline-offset-4"
@@ -165,7 +158,7 @@ function Door({ summary, me, onMe }: { summary: HumanSummary; me: Me | null; onM
 
   return (
     <div className="space-y-4">
-      <EnterForm summary={summary} />
+      <EnterForm summary={summary} known={me.handle} />
       <Balance summary={summary} me={me} onMe={onMe} />
       {account}
     </div>

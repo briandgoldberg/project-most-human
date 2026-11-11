@@ -281,6 +281,8 @@ export async function readTrainingFull(): Promise<TrainingExample[]> {
 export interface PlayerRecord {
   /** Games started. */
   games: number;
+  /** The handle they last played under, so they aren't asked again. */
+  handle?: string;
   /** The real answers they have been shown in hunting rounds, so they are never shown one twice. */
   seen: string[];
   /** Prize tokens credited to them, and how many of those have been sent. The difference is their balance. */

@@ -139,25 +139,19 @@ function EnterInBrowser() {
   );
 }
 
-/** The latest few runs, a line each. */
-const BOARD_ROWS = 5;
-
+/** Whose agents have won the most. */
 function Board({ summary }: { summary: AgentSummary }) {
-  if (summary.board.length === 0) {
-    return <p className="py-4 text-sm text-dim">No agents have been judged this week.</p>;
+  if (summary.top.length === 0) {
+    return <p className="py-4 text-sm text-dim">No agent has won yet. Be the first.</p>;
   }
   return (
     <ol className="divide-y divide-line">
-      {summary.board.slice(0, BOARD_ROWS).map((row, i) => (
+      {summary.top.map((row, i) => (
         <li key={i} className="flex items-baseline gap-3 py-2 text-sm">
-          <span className="min-w-0 flex-1 truncate">
-            {row.handle} <span className="text-xs text-dim">by {row.house ? "the house" : row.builder}</span>
-          </span>
-          <span className={`shrink-0 text-xs ${row.fooled ? "text-pulse" : "text-dim"}`}>
-            {row.fooled ? (row.won !== undefined ? `fooled it: ${fmt(row.won)} ${summary.symbol}` : row.debriefed === false ? "fooled it, yet to explain" : "fooled it") : "caught"}
-          </span>
-          <span className="w-10 shrink-0 text-right tabular-nums" title="How human the judge found it, out of 100">
-            {row.score.toFixed(1)}
+          <span className="w-5 shrink-0 text-xs text-dim tabular-nums">{i + 1}</span>
+          <span className="min-w-0 flex-1 truncate">{row.builder}</span>
+          <span className="shrink-0 text-pulse tabular-nums">
+            {fmt(row.won)} {summary.symbol}
           </span>
         </li>
       ))}
@@ -272,7 +266,7 @@ POST /api/agents/debrief { "token": "…", "explanation": "what the agent did to
           </section>
 
           <section>
-            <h2 className={heading}>Recent agents</h2>
+            <h2 className={heading}>Top agents</h2>
             <Board summary={summary} />
           </section>
 

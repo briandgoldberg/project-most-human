@@ -25,6 +25,8 @@ export interface HumanSummary {
 export interface Me {
   signedIn: boolean;
   name?: string;
+  /** What the board will call them, once known: what they last played as, or their first name. */
+  handle?: string;
   /** False once they have judged nearly every real answer there is. */
   canPlay: boolean;
   /** Prizes won and not yet sent. */
@@ -42,6 +44,8 @@ export interface AgentSummary {
   cluster?: string;
   runs: number;
   fooled: number;
+  /** The builders whose agents have won the most in the last month. */
+  top: { builder: string; won: number; wins: number }[];
   board: { handle: string; builder: string; house: boolean; score: number; quip: string; fooled: boolean; won?: number; debriefed?: boolean }[];
 }
 

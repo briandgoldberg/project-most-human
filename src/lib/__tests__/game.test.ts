@@ -293,7 +293,9 @@ test("the bot side: keys, the fee, the prize for fooling the judge, and the hous
   await assert.rejects(debrief({ token: `${slick.token}x` }), /Invalid session/);
   await assert.rejects(game.submitDebrief({ token: crude.token, explanation: account, answers: replies, code }), /didn't fool the judge/);
 
+  assert.deepEqual((await agents.agentSummary()).top, [], "nobody is a winner until their prize is released");
   const released = await debrief({});
+  assert.deepEqual((await agents.agentSummary()).top, [{ builder: "Acme Labs", won: 1000, wins: 1 }]);
   assert.deepEqual(released.prize, { tokens: 1000, symbol: "PLAY", payable: true });
   assert.deepEqual(released.debrief, { questions: STOCK_DEBRIEF_QUESTIONS, done: true });
   await assert.rejects(debrief({}), /already in/);
@@ -337,6 +339,7 @@ test("the bot side: keys, the fee, the prize for fooling the judge, and the hous
   // It is asked to explain itself all the same; there is just no prize waiting on it.
   assert.equal(houseResult.result.debrief?.done, false);
   assert.equal((await agents.agentSummary()).board[0].house, true);
+  assert.deepEqual((await agents.agentSummary()).top.map((r) => r.builder), ["Acme Labs"], "the house's own agents win nothing, so never rank");
 
   // The owner can switch a key off.
   await agents.setAgentKey(builder.id, { disabled: true });

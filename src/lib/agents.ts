@@ -67,10 +67,24 @@ export async function setAgentKey(id: unknown, change: { disabled?: unknown; hou
 }
 
 /** What anyone may see about the bot side: the terms, and how recent agents did. */
+const TOP_DAYS = 30;
+const TOP_ROWS = 5;
+
 export async function agentSummary() {
   const cfg = config();
-  const [agents, keys] = await Promise.all([recentAgents(), readAgentKeys()]);
+  const [agents, month, keys] = await Promise.all([recentAgents(), recentAgents(TOP_DAYS), readAgentKeys()]);
+  // What each builder's agents have won lately. A prize counts once the agent has explained itself.
+  const winnings = new Map<string, { won: number; wins: number }>();
+  for (const e of month) {
+    if (!e.prize || debriefDue(e)) continue;
+    const tally = winnings.get(e.agentKeyId!) ?? { won: 0, wins: 0 };
+    winnings.set(e.agentKeyId!, { won: tally.won + e.prize.tokens, wins: tally.wins + 1 });
+  }
   return {
+    top: [...winnings]
+      .map(([id, tally]) => ({ builder: keys[id]?.name ?? "unknown", ...tally }))
+      .sort((a, b) => b.won - a.won || b.wins - a.wins)
+      .slice(0, TOP_ROWS),
     fee: cfg.agentFeeTokens,
     prize: cfg.agentPrizeTokens,
     symbol: cfg.tokenSymbol,

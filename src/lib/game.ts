@@ -404,6 +404,12 @@ export async function playStanding(person: string | undefined): Promise<{ ok: bo
   return { ok: !record || record.games === 0, hunting: false };
 }
 
+/** A first name, if it would do as a handle. */
+function suggestedHandle(name: string | undefined): string | undefined {
+  const handle = (name ?? "").trim().replace(/\s+/g, " ").slice(0, 20).trim();
+  return HANDLE.test(handle) ? handle : undefined;
+}
+
 /** For the lobby: who is at the browser, and whether they can start a game now. */
 export async function whoAmI(player: { id: string; name: string } | null, deviceId: string | undefined) {
   const person = personOf({ player: player?.id, deviceHash: fingerprint("device", deviceId) });
@@ -411,6 +417,8 @@ export async function whoAmI(player: { id: string; name: string } | null, device
   return {
     signedIn: Boolean(player),
     name: player?.name,
+    // What the board calls them: what they last played as, or failing that their first name from Google.
+    handle: record?.handle ?? suggestedHandle(player?.name),
     // False once they have judged nearly every real answer there is: they wait for more people to play.
     canPlay: (await playStanding(person)).ok,
     // Prizes won and not yet sent, and where they have asked for them to go.
@@ -626,7 +634,12 @@ export async function enter(input: EnterInput): Promise<Session> {
     { handle, wallet, userAgent: input.userAgent, addressHash: from, deviceHash, player: input.player, first, plan: gamePlan(standing.hunting) },
     guard,
   );
-  if (person) await updatePlayer(person, (p) => void p.games++);
+  if (person) {
+    await updatePlayer(person, (p) => {
+      p.games++;
+      p.handle = handle;
+    });
+  }
   return session;
 }
 

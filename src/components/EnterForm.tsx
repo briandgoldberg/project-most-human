@@ -8,10 +8,16 @@ const field =
   "w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none";
 const label = "mb-1 block text-[11px] tracking-widest text-dim uppercase";
 
-/** Start a game on the human side: just a handle. A wallet comes into it only if there is a fee to pay. */
-export function EnterForm({ summary }: { summary: HumanSummary }) {
+/**
+ * Start a game on the human side. A returning player, or one whose first name
+ * will do, just presses Play; the handle is a small thing they can change.
+ * A wallet comes into it only if there is a fee to pay.
+ */
+export function EnterForm({ summary, known }: { summary: HumanSummary; known?: string }) {
   const router = useRouter();
-  const [handle, setHandle] = useState("");
+  const [handle, setHandle] = useState(known ?? "");
+  // Asked for only when there is nothing to call them yet, or they want a different one.
+  const [choosing, setChoosing] = useState(!known);
   const [wallet, setWallet] = useState("");
   // Not shown to people. A script filling in every field fills this one too.
   const [website, setWebsite] = useState("");
@@ -57,21 +63,30 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <div>
-        <label htmlFor="handle" className={label}>
-          Your handle
-        </label>
-        <input
-          id="handle"
-          className={field}
-          value={handle}
-          onChange={(e) => setHandle(e.target.value)}
-          placeholder="what the board will call you"
-          maxLength={20}
-          autoComplete="off"
-          required
-        />
-      </div>
+      {choosing ? (
+        <div className="flex items-baseline gap-3 text-sm">
+          <label htmlFor="handle" className="shrink-0 text-dim">
+            Play as
+          </label>
+          <input
+            id="handle"
+            className="w-48 border-b border-line bg-transparent py-1 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none"
+            value={handle}
+            onChange={(e) => setHandle(e.target.value)}
+            placeholder="your handle"
+            maxLength={20}
+            autoComplete="off"
+            required
+          />
+        </div>
+      ) : (
+        <p className="text-sm text-dim">
+          Playing as <span className="text-paper">{handle}</span>{" "}
+          <button type="button" onClick={() => setChoosing(true)} className="text-xs underline underline-offset-4">
+            change
+          </button>
+        </p>
+      )}
 
       <div aria-hidden className="absolute -left-[9999px] h-0 w-0 overflow-hidden">
         <label htmlFor="website">Website</label>
