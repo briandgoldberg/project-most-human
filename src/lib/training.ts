@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cohortForPassword, cohorts, config, type Cohort } from "./config";
+import { agentKeysForOwner } from "./agents";
 import { GameError, boardForLabelling } from "./game";
 import { MIN_EXAMPLES_PER_CLASS, topWeights, trainModel, type BehaviorModel } from "./judge/model";
 import { readModelFile, readTraining, writeModelFile } from "./store";
@@ -89,6 +90,7 @@ export async function trainingSummary(cohort: Cohort) {
     // Who on the public board is really what is for the owner's eyes only.
     owner,
     board: owner ? await boardForLabelling() : [],
+    agentKeys: owner ? await agentKeysForOwner() : [],
     human,
     agent,
     neededPerKind: MIN_EXAMPLES_PER_CLASS,

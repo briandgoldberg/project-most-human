@@ -325,3 +325,66 @@ test("the device is read from what the browser reports", async () => {
   // A touchscreen laptop is still a desktop.
   assert.equal(deviceOf(env("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36", 10, [1920, 1080])), "desktop");
 });
+
+test("the agent bounty: keys, blind judging, automatic reveal, limits", async () => {
+  const game = await import("../game");
+  const agents = await import("../agents");
+  const store = await import("../store");
+  const before = await game.roundSummary();
+
+  // One key per payout wallet, shown once, stored only as a hash.
+  await assert.rejects(agents.issueAgentKey({ name: "x", wallet: WALLET }), /builder name/);
+  await assert.rejects(agents.issueAgentKey({ name: "Acme Labs", wallet: "not-a-wallet" }), /Solana address/);
+  const { key } = await agents.issueAgentKey({ name: "Acme Labs", wallet: WALLET });
+  assert.match(key, /^mh_agent_[0-9a-f]{12}_.{20,}$/);
+  await assert.rejects(agents.issueAgentKey({ name: "Other", wallet: WALLET }), /already has an agent key/);
+  await assert.rejects(agents.issueAgentKey({ name: "acme labs", wallet: TREASURY }), /taken/);
+  assert.ok(!JSON.stringify(await store.readAgentKeys()).includes(key.split("_").slice(3).join("_")), "the secret is not stored");
+
+  // Only the real key works.
+  const builder = await agents.requireAgentKey(key);
+  assert.equal(builder.name, "Acme Labs");
+  for (const bad of [undefined, "", "mh_agent_", key.slice(0, -1), key.replace(/_[^_]+$/, "_wrong"), key.replace("mh_agent_", "mh_agent_0")]) {
+    await assert.rejects(agents.requireAgentKey(bad), /isn't valid/, String(bad));
+  }
+
+  // An agent plays the ordinary game. Its result says whether it fooled the judge, and where it ranks among agents.
+  const session = await game.enterAgent({ key: builder, handle: "acme-run-1" });
+  assert.equal(session.agent, true);
+  assert.equal(session.training, false);
+  const result = await playThrough(game, session);
+  assert.equal(result.impostor?.fooled, result.score >= 50);
+  assert.equal(result.impostor?.rank, 1);
+  assert.equal(result.rank, undefined);
+
+  // It never touches the players' board or pool...
+  assert.deepEqual(await game.roundSummary(), before);
+  // ...it is on the agents' board under its builder's name...
+  const summary = await agents.bountySummary();
+  assert.deepEqual(summary.board.map((r) => [r.handle, r.builder, r.fooled]), [["acme-run-1", "Acme Labs", result.score >= 50]]);
+  assert.equal(summary.board[0].leading, result.score >= 50);
+  assert.ok(!JSON.stringify(summary).includes(WALLET), "the public board doesn't show payout wallets");
+  // ...and it was revealed as an agent the moment it was scored.
+  const example = (await store.readTraining()).find((e) => e.handle === "acme-run-1")!;
+  assert.equal(example.label, "agent");
+  assert.equal(example.cohortId, "agents");
+
+  // The bounty goes only to an agent the judge took for human.
+  const state = (await store.readRound(session.roundId))!;
+  assert.equal(game.bountyLeader(state)?.id, result.score >= 50 ? session.entryId : undefined);
+  const entry = state.entries[session.entryId];
+  entry.result!.score = 49.9;
+  assert.equal(game.bountyLeader(state), undefined);
+  entry.result!.score = 50;
+  assert.equal(game.bountyLeader(state)?.id, session.entryId);
+
+  // A key gets a fixed number of runs a day, and the owner can switch a key off.
+  for (let i = 2; i <= 5; i++) await game.enterAgent({ key: builder, handle: `acme-run-${i}` });
+  await assert.rejects(game.enterAgent({ key: builder, handle: "acme-run-6" }), /used its 5 entries/);
+  const owner = await agents.agentKeysForOwner();
+  assert.deepEqual(owner.map((k) => [k.name, k.wallet, k.entriesToday, k.disabled]), [["Acme Labs", WALLET, 5, false]]);
+  await agents.setAgentKeyDisabled(builder.id, true);
+  await assert.rejects(agents.requireAgentKey(key), /switched off/);
+  await agents.setAgentKeyDisabled(builder.id, false);
+  assert.equal((await agents.requireAgentKey(key)).id, builder.id);
+});

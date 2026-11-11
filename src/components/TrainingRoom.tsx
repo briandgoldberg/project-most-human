@@ -240,6 +240,57 @@ function BoardLabels({ summary, onChange }: { summary: TrainingSummary; onChange
   );
 }
 
+/** Owner only: the builders holding agent keys, and a switch for each. */
+function AgentKeys({ summary, onChange }: { summary: TrainingSummary; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle(id: string, disabled: boolean) {
+    setBusy(id);
+    setError(null);
+    try {
+      await api.train.setAgentKey(id, disabled);
+      onChange();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="mb-10">
+      <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">
+        Agent keys · only you see this
+      </h2>
+      {summary.agentKeys.length === 0 ? (
+        <p className="py-6 text-sm text-dim">No builder has asked for a key yet.</p>
+      ) : (
+        <ol className="divide-y divide-line">
+          {summary.agentKeys.map((k) => (
+            <li key={k.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
+              <span className={`min-w-0 flex-1 break-all ${k.disabled ? "text-dim line-through" : ""}`}>
+                {k.name} <span className="text-xs text-dim">{`${k.wallet.slice(0, 4)}…${k.wallet.slice(-4)}`}</span>
+              </span>
+              <span className="text-xs text-dim">
+                {k.entriesToday} today{k.bestToday !== null ? `, best ${k.bestToday.toFixed(1)}` : ""}
+              </span>
+              <button type="button" disabled={busy === k.id} onClick={() => toggle(k.id, !k.disabled)} className="border border-line px-2.5 py-1 text-xs text-dim hover:border-paper hover:text-paper disabled:opacity-40">
+                {k.disabled ? "Switch on" : "Switch off"}
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-sm text-pulse">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function Room({ summary, onChange, onLock }: { summary: TrainingSummary; onChange: () => void; onLock: () => void }) {
   const [retraining, setRetraining] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -317,6 +368,7 @@ function Room({ summary, onChange, onLock }: { summary: TrainingSummary; onChang
       )}
 
       {summary.owner && <BoardLabels summary={summary} onChange={onChange} />}
+      {summary.owner && <AgentKeys summary={summary} onChange={onChange} />}
 
       <section>
         <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">

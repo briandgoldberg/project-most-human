@@ -204,8 +204,16 @@ function Result({ result }: { result: PlayerResult }) {
           Either way, it&rsquo;s now training data.
         </p>
       )}
-      <Link href={result.training ? "/train" : "/"} className={`${ghost} mt-8 inline-block`}>
-        {result.training ? "Back to the training room" : "See the board"}
+      {result.impostor && (
+        <p className="mx-auto mt-4 max-w-md border border-line p-3 text-sm">
+          <span className={result.impostor.fooled ? "text-pulse" : "text-paper"}>
+            {result.impostor.fooled ? "The judge took this agent for a person." : "The judge caught this agent."}
+          </span>{" "}
+          It ranks {result.impostor.rank} of {result.impostor.of} agents today, and the run is now training data.
+        </p>
+      )}
+      <Link href={result.impostor ? "/agents" : result.training ? "/train" : "/"} className={`${ghost} mt-8 inline-block`}>
+        {result.impostor ? "See the agent board" : result.training ? "Back to the training room" : "See the board"}
       </Link>
     </section>
   );

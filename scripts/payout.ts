@@ -5,7 +5,8 @@ import { createAssociatedTokenAccountIdempotentInstruction, createTransferChecke
 import { Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { config } from "../src/lib/config";
-import { leader, poolTokens, ranked } from "../src/lib/game";
+import { FOOLED_AT, agentBoard, bountyLeader, leader, poolTokens, ranked } from "../src/lib/game";
+import { readAgentKeys } from "../src/lib/store";
 import { solanaSetup, toRawAmount } from "../src/lib/payments/solana";
 import { readRound, updateRound } from "../src/lib/store";
 
@@ -14,6 +15,7 @@ import { readRound, updateRound } from "../src/lib/store";
  *
  *   npm run payout -- --round 2026-11-11                 show what would happen
  *   npm run payout -- --round 2026-11-11 --execute       pay it (asks for the treasury key)
+ *   npm run payout -- --round 2026-11-11 --bounty        the agent bounty instead of the players' pool
  *
  * The treasury key comes from --treasury-key <keypair.json> or the
  * TREASURY_SECRET_KEY environment variable (base58 or JSON array). It is only
@@ -23,6 +25,7 @@ const { values: args } = parseArgs({
   options: {
     round: { type: "string" },
     execute: { type: "boolean", default: false },
+    bounty: { type: "boolean", default: false },
     force: { type: "boolean", default: false },
     "treasury-key": { type: "string" },
   },
@@ -42,21 +45,35 @@ async function main() {
   if (!state) throw new Error(`No data for round ${args.round}.`);
 
   const stillOpen = Date.now() < state.round.endsAt;
-  const board = ranked(state);
-  const winner = leader(state);
-  const pool = poolTokens(state);
+  const bounty = args.bounty!;
+  const keys = bounty ? await readAgentKeys() : {};
+  const board = bounty ? agentBoard(state) : ranked(state);
+  // The bounty goes to the best agent the judge took for human, and to its builder's wallet.
+  const top = bounty ? bountyLeader(state) : leader(state);
+  const winner = top && bounty ? { ...top, wallet: keys[top.agentKeyId!]?.wallet } : top;
+  const pool = bounty ? cfg.agentBounty : poolTokens(state);
+  const settled = bounty ? state.bountyPayout : state.payout;
 
-  console.log(`Round ${args.round}: ${board.length} scored entries, pool ${pool} ${cfg.tokenSymbol}${stillOpen ? " (round still open)" : ""}`);
+  console.log(
+    `Round ${args.round}: ${board.length} scored ${bounty ? "agents" : "entries"}, ${bounty ? "bounty" : "pool"} ${pool} ${cfg.tokenSymbol}${stillOpen ? " (round still open)" : ""}`,
+  );
   for (const [i, e] of board.slice(0, 5).entries()) {
     console.log(`  ${i + 1}. ${e.result!.score.toFixed(2).padStart(6)}  ${e.handle}`);
   }
-  if (state.payout && !state.payout.dryRun) {
-    console.log(`\nAlready paid: ${state.payout.amountTokens} ${cfg.tokenSymbol} to ${state.payout.winnerHandle} (${state.payout.signature ?? "no signature"}).`);
+  if (settled && !settled.dryRun) {
+    console.log(`\nAlready paid: ${settled.amountTokens} ${cfg.tokenSymbol} to ${settled.winnerHandle} (${settled.signature ?? "no signature"}).`);
     return;
   }
   if (!winner) {
-    console.log("\nNo paying player has been scored, so there is nobody to pay.");
+    console.log(
+      bounty
+        ? `\nNo agent scored ${FOOLED_AT} or more, so the bounty isn't won.`
+        : "\nNo paying player has been scored, so there is nobody to pay.",
+    );
     return;
+  }
+  if (bounty) {
+    console.log(`\nBefore paying: have ${keys[winner.agentKeyId!]?.name ?? "the builder"} show you the agent running. A person answering by hand doesn't qualify.`);
   }
   console.log(`\nWinner: ${winner.handle}${winner.wallet ? ` (${winner.wallet})` : ""} takes ${pool} ${cfg.tokenSymbol}.`);
 
@@ -91,7 +108,7 @@ async function main() {
   }
 
   await updateRound(args.round, (s) => {
-    s.payout = {
+    s[bounty ? "bountyPayout" : "payout"] = {
       winnerEntryId: winner.id,
       winnerHandle: winner.handle,
       winnerWallet: winner.wallet,

@@ -7,10 +7,10 @@ import { MAX_ANSWER_CHARS, bankQuestionsFor } from "./questions";
 import { appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
 import { aggregateFeatures, deviceOf, extractAnswerFeatures } from "./telemetry/features";
 import { sanitizeTelemetry } from "./telemetry/sanitize";
-import type { Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, RoundState } from "./types";
+import type { AgentKey, Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, RoundState } from "./types";
 
 /**
- * The game has two doors into the same judge:
+ * The game has three doors into the same judge:
  *
  *   The daily competition (public). Players pay the entry fee, answer the
  *   day's questions, and the top score takes the pool. Nobody here is labelled.
@@ -20,6 +20,11 @@ import type { Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, R
  *   The judge scores them exactly as it scores the public, without being told
  *   which they are; the truth is attached only after the score is final, and
  *   the pair is saved as training data.
+ *
+ *   The agent bounty (public, needs an agent key). Builders send agents to
+ *   pass as people. The judge is not told these are agents either. Once
+ *   scored, each is revealed, saved as training data, and ranked on its own
+ *   board; the best one that was judged human wins the bounty.
  */
 
 export class GameError extends Error {
@@ -153,6 +158,8 @@ export interface Session {
   entryId: string;
   handle: string;
   training: boolean;
+  /** Entered with an agent key, competing for the bounty. */
+  agent: boolean;
   question: Question;
   index: number;
   total: number;
@@ -184,7 +191,8 @@ function sessionFor(state: RoundState, entry: Entry, token: string): Session {
     roundId: entry.roundId,
     entryId: entry.id,
     handle: entry.handle,
-    training: !entry.prizeEligible,
+    training: !entry.prizeEligible && !entry.agentKeyId,
+    agent: Boolean(entry.agentKeyId),
     question: questions[entry.progress],
     index: entry.progress,
     total: totalOf(state, entry),
@@ -196,7 +204,8 @@ interface NewEntry {
   handle: string;
   wallet?: string;
   payment: EntryPayment;
-  training?: { cohort: Cohort; label: Kind };
+  /** Present when the truth about this entry is known up front: who vouches for it, and what it is. */
+  known?: { cohortId: string; label: Kind; agentKeyId?: string };
   userAgent?: string;
   /** The player's opening question, written before the entry is created. */
   first: Question;
@@ -213,11 +222,13 @@ function addEntry(state: RoundState, input: NewEntry): Session {
     createdAt: now,
     tokenHash: "",
     payment: input.payment,
-    cohortId: input.training?.cohort.id,
-    label: input.training?.label,
+    cohortId: input.known?.cohortId,
+    label: input.known?.label,
+    agentKeyId: input.known?.agentKeyId,
     questions: [input.first],
     adaptive: true,
-    prizeEligible: !input.training,
+    // Only ordinary competitors are on the public board and in line for the pool.
+    prizeEligible: !input.known,
     status: "playing",
     progress: 0,
     servedAt: [now],
@@ -411,10 +422,58 @@ export async function enterTraining(input: {
       handle,
       first,
       payment: { mode: "waived", amountTokens: 0 },
-      training: { cohort: input.cohort, label },
+      known: { cohortId: input.cohort.id, label },
       userAgent: input.userAgent,
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// The agent bounty
+// ---------------------------------------------------------------------------
+
+/** Cohort name under which bounty agents are filed as training data. */
+export const AGENT_COHORT = "agents";
+/** An agent has fooled the judge when it scores at least this. */
+export const FOOLED_AT = 50;
+
+/** Scored bounty entries for a round, best first. */
+export function agentBoard(state: RoundState): Entry[] {
+  return Object.values(state.entries)
+    .filter((e) => e.agentKeyId && e.status === "scored" && e.result)
+    .sort((a, b) => b.result!.score - a.result!.score || a.result!.scoredAt - b.result!.scoredAt);
+}
+
+/** The agent currently in line for the bounty: the best one the judge took for human. */
+export function bountyLeader(state: RoundState): Entry | undefined {
+  const top = agentBoard(state)[0];
+  return top && top.result!.score >= FOOLED_AT ? top : undefined;
+}
+
+/**
+ * Enter an agent for the bounty. The caller has already checked the key. The
+ * judge scores it exactly like anyone else, without being told it is an agent.
+ */
+export async function enterAgent(input: { key: AgentKey; handle: unknown; userAgent?: string }): Promise<Session> {
+  const cfg = config();
+  const handle = cleanHandle(input.handle ?? input.key.name);
+  const first = await nextQuestion(0, []);
+  return withRound(roundIdFor(), (state) => {
+    const today = Object.values(state.entries).filter((e) => e.agentKeyId);
+    if (today.filter((e) => e.agentKeyId === input.key.id).length >= cfg.agentEntriesPerKey) {
+      throw new GameError(429, "key_limit", `This key has used its ${cfg.agentEntriesPerKey} entries for today`);
+    }
+    if (today.length >= cfg.agentDailyCap) {
+      throw new GameError(429, "bounty_full", "The bounty has taken all the agent entries it can today");
+    }
+    return addEntry(state, {
+      handle,
+      first,
+      payment: { mode: "waived", amountTokens: 0 },
+      known: { cohortId: AGENT_COHORT, label: "agent", agentKeyId: input.key.id },
+      userAgent: input.userAgent,
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -448,11 +507,20 @@ export interface PlayerResult {
   scored?: number;
   /** Training sessions: what the player really was, shown to them once the judge has committed. */
   training?: { truth: Kind; judgeCorrect: boolean };
+  /** Bounty agents: whether the judge took it for human, and its place among today's agents. */
+  impostor?: { fooled: boolean; rank: number; of: number };
 }
 
 function playerResult(state: RoundState, entry: Entry): PlayerResult {
   const result = entry.result!;
   const base = { score: result.score, verdict: result.verdict, quip: result.quip, roundId: entry.roundId, handle: entry.handle };
+  if (entry.agentKeyId) {
+    const board = agentBoard(state);
+    return {
+      ...base,
+      impostor: { fooled: result.score >= FOOLED_AT, rank: board.findIndex((e) => e.id === entry.id) + 1, of: board.length },
+    };
+  }
   // Only training sessions get the reveal. A competitor someone labelled later still just sees their rank.
   if (!entry.prizeEligible && entry.label) {
     return { ...base, training: { truth: entry.label, judgeCorrect: result.verdict === entry.label } };

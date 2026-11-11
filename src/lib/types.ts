@@ -176,6 +176,8 @@ export interface Entry {
   cohortId?: string;
   /** Ground truth, when known: declared up front in the training room, or added later for a competition entry. */
   label?: Kind;
+  /** Set for entries made with an agent key, competing for the bounty: which key. */
+  agentKeyId?: string;
   /** Set when a trainer labelled this competition entry after the fact: the cohort that did it. */
   labelledBy?: string;
   /**
@@ -222,6 +224,18 @@ export interface Payout {
   dryRun: boolean;
 }
 
+/** A builder's licence to enter agents for the bounty. */
+export interface AgentKey {
+  id: string;
+  /** What the board calls this builder. */
+  name: string;
+  /** Where a bounty would be paid. Also what makes a builder one builder: one key per wallet. */
+  wallet: string;
+  secretHash: string;
+  createdAt: number;
+  disabled?: boolean;
+}
+
 export interface RoundState {
   round: Round;
   entries: Record<string, Entry>;
@@ -229,6 +243,8 @@ export interface RoundState {
   /** Payment signature -> entry id. Prevents replaying one payment. */
   signatures: Record<string, string>;
   payout?: Payout;
+  /** The agent bounty for this round, once settled. */
+  bountyPayout?: Payout;
 }
 
 /** One line of data/training/<round>.jsonl. */

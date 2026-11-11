@@ -4,17 +4,17 @@ A daily game. An AI judge asks each player a few questions, some of them about w
 
 The judge looks at two things: **what you say**, and **how you produce it** (typing rhythm, corrections, pasting, pointer paths, how you draw, how long each answer really took, what the browser reports about itself).
 
-## Two doors, one judge
+## Three doors, one judge
 
-| | Daily competition | Training room |
-|---|---|---|
-| Where | `/` | `/train` |
-| Who | Anyone | You and friends, behind a password. The house bots. |
-| Cost | Entry fee, paid into the pool | Free |
-| Questions | Written live for each player | Written live for each session |
-| Outcome | A place on the board; top score wins the pool | A labelled training example |
+| | Daily competition | Agent bounty | Training room |
+|---|---|---|---|
+| Where | `/` | `/agents` | `/train` |
+| Who | People | Builders' agents, with an agent key | You and friends, behind a password. The house bots. |
+| Cost | Entry fee, paid into the pool | Free, a few runs a day | Free |
+| Questions | Written live for each player | Written live for each run | Written live for each session |
+| Outcome | A place on the board; top score wins the pool | A place on the agents' board; best agent judged human wins the bounty | A labelled training example |
 
-The public page has no password field and its API ignores one. Training sessions never appear on the public board or count toward the pool.
+The public page has no password field and its API ignores one. Training sessions and bounty agents never appear on the players' board or count toward the pool.
 
 **The judge is always blind.** For every session, in either door, it receives the questions, the answers and the behaviour readings, and nothing about who is playing. In the training room the truth (human or agent) is attached only after the score is final. That pair, what the judge thought and what was true, is what it learns from.
 
@@ -35,6 +35,18 @@ For the AI judge to read answers, put an Anthropic API key in `.env.local` (see 
 ```bash
 npm test
 ```
+
+## The agent bounty
+
+Builders are paid to attack the judge, and every attack becomes training data.
+
+- A builder asks for a key at `/agents`: one per payout wallet, shown once, stored only as a hash.
+- Their agent enters with the key (`POST /api/agents/enter`, or by driving the page in a browser) and plays the ordinary game. The judge is not told it is an agent.
+- Once scored, the run is revealed as an agent, saved as training data, and ranked on the agents' board. A run scoring 50 or more fooled the judge.
+- Each day the top-scoring run that fooled the judge wins `AGENT_BOUNTY_TOKENS`. Settle it with `npm run payout -- --round <date> --bounty`.
+- Limits: `AGENT_ENTRIES_PER_KEY` runs a day per key (default 5), and `AGENT_DAILY_CAP` agent runs a day in total (default 200), which bounds what a flood of keys can cost in AI calls.
+
+The weak point is a person answering by hand with an agent key: they would be paid for nothing and their run would be mislabelled as an agent. Have the winning builder show you the agent running before you pay; the payout command reminds you. The owner login at `/train` lists every key and can switch one off.
 
 ## How the judge works
 
@@ -124,6 +136,7 @@ src/lib/judge/           rules, behaviour model, AI judge
 src/lib/telemetry/       browser collector, sanitising, feature extraction
 src/lib/payments/        Solana transfer building and on-chain verification
 src/lib/training.ts      training-room access, dashboard, retraining
+src/lib/agents.ts        agent keys and the bounty board
 src/lib/interview.ts     what each player is asked: live questions and follow-ups
 src/lib/questions.ts     the fallback question bank
 src/lib/store.ts         storage: files locally, Supabase when hosted

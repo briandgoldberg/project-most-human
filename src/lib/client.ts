@@ -30,6 +30,7 @@ export interface Session {
   roundId: string;
   handle: string;
   training: boolean;
+  agent: boolean;
   question: Question;
   index: number;
   total: number;
@@ -45,12 +46,24 @@ export interface PlayerResult {
   rank?: number;
   scored?: number;
   training?: { truth: Kind; judgeCorrect: boolean };
+  impostor?: { fooled: boolean; rank: number; of: number };
+}
+
+export interface BountySummary {
+  roundId: string;
+  bounty: number;
+  symbol: string;
+  fooledAt: number;
+  entriesPerKey: number;
+  payout?: { winnerHandle: string; amountTokens: number; signature?: string };
+  board: { rank: number; handle: string; builder: string; score: number; quip: string; fooled: boolean; leading: boolean }[];
 }
 
 export interface TrainingSummary {
   cohort: { id: string; label: Kind | "ask" };
   owner: boolean;
   board: { roundId: string; entryId: string; handle: string; score: number; verdict: Kind; label?: Kind }[];
+  agentKeys: { id: string; name: string; wallet: string; disabled: boolean; entriesToday: number; bestToday: number | null }[];
   human: { total: number; judgedRight: number };
   agent: { total: number; judgedRight: number };
   neededPerKind: number;
@@ -117,6 +130,12 @@ export const api = {
     retrain: () => call<TrainingSummary["model"]>("/api/train/retrain", {}),
     label: (roundId: string, entryId: string, label: Kind) =>
       call<{ handle: string; label: Kind; judgeCorrect: boolean }>("/api/train/label", { roundId, entryId, label }),
+    setAgentKey: (id: string, disabled: boolean) => call<{ ok: true }>("/api/train/agent-key", { id, disabled }),
+  },
+  agents: {
+    summary: () => call<BountySummary>("/api/agents"),
+    requestKey: (name: string, wallet: string) => call<{ key: string; name: string }>("/api/agents/keys", { name, wallet }),
+    enter: (key: string, handle: string) => call<Session>("/api/agents/enter", { key, handle }),
   },
 };
 
@@ -124,10 +143,10 @@ export const api = {
 
 const KEY = "pmh.session";
 
-type SavedSession = Pick<Session, "token" | "handle" | "expiresAt" | "training">;
+type SavedSession = Pick<Session, "token" | "handle" | "expiresAt" | "training" | "agent">;
 
-export function saveSession({ token, handle, expiresAt, training }: SavedSession): void {
-  sessionStorage.setItem(KEY, JSON.stringify({ token, handle, expiresAt, training }));
+export function saveSession({ token, handle, expiresAt, training, agent }: SavedSession): void {
+  sessionStorage.setItem(KEY, JSON.stringify({ token, handle, expiresAt, training, agent }));
 }
 
 export function loadSession(): SavedSession | null {

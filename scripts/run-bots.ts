@@ -20,6 +20,7 @@ import { answerText } from "./bots/text";
  *   npm run bots -- --browser                 also run the Playwright bot through the real page
  *   npm run bots -- --stealth 8               only the hardest agents: a real browser driven like a person,
  *                                             one persona each, answers written by Claude (needs credentials)
+ *   npm run bots -- --agent-key mh_agent_…    compete for the agent bounty with a builder's key
  *   npm run bots -- --paying --wallets .solana-dev/players
  *                                             enter the public competition as paying players instead
  *
@@ -39,6 +40,7 @@ const { values: args } = parseArgs({
     stealth: { type: "string" },
     "stealth-from": { type: "string", default: "0" },
     paying: { type: "boolean", default: false },
+    "agent-key": { type: "string", default: process.env.AGENT_KEY },
     wallets: { type: "string" },
     rpc: { type: "string", default: process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com" },
   },
@@ -86,9 +88,14 @@ async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
   const handle = `${persona.name}-${Math.random().toString(36).slice(2, 6)}`.slice(0, 20);
   const ua = persona.name === "api-bot" ? undefined : persona.respond({ id: "", kind: "text", category: "", prompt: "" }, "x", 0).env?.ua;
   // Training room by default; the public competition (and its entry fee) with --paying.
-  const entry = args.paying ? { handle, wallet: wallet?.publicKey.toBase58() } : { handle, password: args.password };
+  const forBounty = Boolean(args["agent-key"]) && !args.paying;
+  const entry = args.paying
+    ? { handle, wallet: wallet?.publicKey.toBase58() }
+    : forBounty
+      ? { handle, key: args["agent-key"] }
+      : { handle, password: args.password };
 
-  let entered = await post(args.paying ? "/api/enter" : "/api/train/enter", entry, ua);
+  let entered = await post(args.paying ? "/api/enter" : forBounty ? "/api/agents/enter" : "/api/train/enter", entry, ua);
   if (entered.status === 402 && entered.json.payment) {
     if (!wallet) throw new Error("The server wants an entry fee. Pass --wallets <dir of keypairs> with --paying.");
     const payment = entered.json.payment as { roundId: string; intentId: string; transaction: string };

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, type RoundSummary } from "@/lib/client";
 import { EnterForm } from "./EnterForm";
@@ -127,6 +128,14 @@ export function Lobby() {
               You get a score from 0 to 100. Highest score when the round closes at midnight UTC wins the pool.
             </div>
           </section>
+
+          <p className="mt-8 text-xs text-dim">
+            Building an agent instead?{" "}
+            <Link href="/agents" className="text-paper underline underline-offset-4">
+              There&rsquo;s a bounty for fooling the judge
+            </Link>
+            .
+          </p>
         </>
       )}
     </Shell>

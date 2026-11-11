@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
-import type { AnswerTelemetry, RoundState, TrainingExample } from "./types";
+import type { AgentKey, AnswerTelemetry, RoundState, TrainingExample } from "./types";
 
 /**
  * Storage. Three kinds of thing are kept:
@@ -171,31 +171,49 @@ export async function readRound(roundId: string): Promise<RoundState | null> {
 }
 
 /**
- * Read-modify-write a round atomically. `create` builds the round the first
- * time it is touched. If another server changed the round in the meantime the
- * whole step is redone on the fresh copy, so `fn` may run more than once: it
- * must only change `state` and keep quick.
+ * Read-modify-write one document atomically. `create` builds it the first
+ * time. If another server changed it in the meantime the whole step is redone
+ * on the fresh copy, so `fn` may run more than once: it must only change the
+ * value it is given, and keep quick.
  */
+async function updateDoc<V, T>(key: string, fn: (value: V) => T | Promise<T>, create?: () => Promise<V>): Promise<T> {
+  return withLock(key, async () => {
+    for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
+      const doc = await backend().getDoc<V>(key);
+      let value = doc?.value;
+      if (value === undefined) {
+        if (!create) throw new Error(`${key} does not exist`);
+        value = await create();
+      }
+      const result = await fn(value);
+      if (await backend().putDoc(key, value, doc ? doc.version : 0)) return result;
+      await sleep(20 + Math.random() * 60 * (attempt + 1));
+    }
+    throw new Error(`${key} is too busy to update`);
+  });
+}
+
+/** Read-modify-write a round atomically. `create` builds the round the first time it is touched. */
 export async function updateRound<T>(
   roundId: string,
   fn: (state: RoundState) => T | Promise<T>,
   create?: () => Promise<RoundState>,
 ): Promise<T> {
-  const key = roundKey(roundId);
-  return withLock(key, async () => {
-    for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
-      const doc = await backend().getDoc<RoundState>(key);
-      let state = doc?.value;
-      if (!state) {
-        if (!create) throw new Error(`Round ${roundId} does not exist`);
-        state = await create();
-      }
-      const result = await fn(state);
-      if (await backend().putDoc(key, state, doc ? doc.version : 0)) return result;
-      await sleep(20 + Math.random() * 60 * (attempt + 1));
-    }
-    throw new Error(`Round ${roundId} is too busy to update`);
-  });
+  return updateDoc(roundKey(roundId), fn, create);
+}
+
+// ---------------------------------------------------------------------------
+// Agent keys
+// ---------------------------------------------------------------------------
+
+const AGENT_KEYS = "agents/keys";
+
+export async function readAgentKeys(): Promise<Record<string, AgentKey>> {
+  return (await backend().getDoc<Record<string, AgentKey>>(AGENT_KEYS))?.value ?? {};
+}
+
+export async function updateAgentKeys<T>(fn: (keys: Record<string, AgentKey>) => T): Promise<T> {
+  return updateDoc(AGENT_KEYS, fn, async () => ({}));
 }
 
 // ---------------------------------------------------------------------------

@@ -94,6 +94,12 @@ export function config() {
     /** Entry fee in whole tokens. */
     entryFeeTokens: num("ENTRY_FEE_TOKENS", 1000),
     tokenSymbol: env("TOKEN_SYMBOL") ?? (paymentMode === "mock" ? "PLAY" : "TOKEN"),
+    /** What the best agent of the day wins for being judged human, in whole tokens. */
+    agentBounty: num("AGENT_BOUNTY_TOKENS", 5000),
+    /** How many times a day one agent key may enter. */
+    agentEntriesPerKey: num("AGENT_ENTRIES_PER_KEY", 5),
+    /** Ceiling on agent entries per day across all keys, which bounds what a flood of keys can cost in AI calls. */
+    agentDailyCap: num("AGENT_DAILY_CAP", 200),
     /** House cut of the pool, in basis points. */
     rakeBps: num("RAKE_BPS", 0),
     /** How long a player has to finish after entering. */
