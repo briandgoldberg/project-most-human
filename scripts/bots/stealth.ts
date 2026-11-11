@@ -202,6 +202,8 @@ class Hand {
 }
 
 async function centre(locator: any, spread = 0.25): Promise<Point> {
+  // A hand can only press what is on screen.
+  await locator.scrollIntoViewIfNeeded();
   const box = await locator.boundingBox();
   return { x: box.x + box.width * (0.5 + rand(-spread, spread)), y: box.y + box.height * (0.5 + rand(-spread, spread)) };
 }
@@ -488,7 +490,11 @@ export async function runStealthBot(url: string, agentKey: string, index: number
     await write(handle);
     await sleep(rand(300, 900));
     await press(page.getByRole("button", { name: "Start a run in this browser" }));
-    await page.waitForURL("**/play");
+    await page.waitForURL("**/play", { timeout: 60_000 }).catch(async (err: Error) => {
+      // Say what the page said, if it refused the run.
+      const said = (await page.locator("form [role=alert]").allInnerTexts()).join(" ");
+      throw new Error(said ? `${handle}: could not enter: ${said}` : err.message);
+    });
 
     const history: { q: string; a: string }[] = [];
     for (;;) {
