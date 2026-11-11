@@ -274,6 +274,45 @@ export async function readTrainingFull(): Promise<TrainingExample[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Players
+// ---------------------------------------------------------------------------
+
+/** What the game remembers about one person on the human side, across their games. */
+export interface PlayerRecord {
+  /** Games started. */
+  games: number;
+  /** The real answers they have been shown in hunting rounds, so they are never shown one twice. */
+  seen: string[];
+  /** Prize tokens credited to them, and how many of those have been sent. The difference is their balance. */
+  won?: number;
+  paid?: number;
+  /** Where they have asked for their balance to be sent. */
+  wallet?: string;
+  firstAt: number;
+  lastAt: number;
+}
+
+const playerKey = (id: string) => {
+  if (!SAFE_ID.test(id)) throw new Error("Invalid player id");
+  return `players/${id}`;
+};
+
+export async function readPlayer(id: string): Promise<PlayerRecord | null> {
+  return (await backend().getDoc<PlayerRecord>(playerKey(id)))?.value ?? null;
+}
+
+export async function updatePlayer<T>(id: string, fn: (player: PlayerRecord) => T): Promise<T> {
+  return updateDoc<PlayerRecord, T>(
+    playerKey(id),
+    (player) => {
+      player.lastAt = Date.now();
+      return fn(player);
+    },
+    async () => ({ games: 0, seen: [], firstAt: Date.now(), lastAt: Date.now() }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Bot Hunter
 // ---------------------------------------------------------------------------
 
@@ -293,6 +332,8 @@ export interface HuntRecord {
   at: number;
   roundId: string;
   hunterEntryId: string;
+  /** Who the hunter was, across their games: see TrainingExample.player. */
+  hunter?: string;
   sourceEntryId: string;
   level: number;
   prompt: string;

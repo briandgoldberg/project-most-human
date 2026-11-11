@@ -1,12 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "./config";
-import { HUNT_LEVELS, clearHuntCache, huntScore, huntingAvailable, nextHunt } from "./hunt";
+import { HUNT_LEVELS, clearHuntCache, freshFor, huntScore, huntingAvailable, nextHunt, seenKey } from "./hunt";
 import { QUESTION_PLAN, gamePlan, nextQuestion } from "./interview";
 import { debriefLessons, debriefQuestions, judgeEntry } from "./judge";
 import { heuristicScore } from "./judge/heuristic";
 import { isValidAddress } from "./payments/address";
 import { MAX_ANSWER_CHARS, bankQuestionsFor } from "./questions";
-import { appendHuntRecord, appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
+import { appendHuntRecord, appendTraining, readPlayer, readRound, readTelemetry, saveTelemetry, updatePlayer, updateRound } from "./store";
 import { aggregateFeatures, deviceOf, extractAnswerFeatures } from "./telemetry/features";
 import { sanitizeTelemetry } from "./telemetry/sanitize";
 import type { AgentKey, AnswerFeatures, ClientEnv, Entry, EntryPayment, Evidence, Hunt, JudgeResult, Kind, PaymentIntent, Question, RoundState, StepKind } from "./types";
@@ -52,7 +52,7 @@ const solana = () => import("./payments/solana");
  *   v2: recordings may be kept and used for research and datasets.
  *   v3: answers may also be shown, without a name, to other players.
  */
-export const CONSENT_VERSION = "v3";
+export const CONSENT_VERSION = "v4";
 
 /** At or above this the judge takes a player for a person; below it, for a bot. */
 export const HUMAN_AT = 50;
@@ -135,7 +135,11 @@ export async function recentPlayers(days = 7): Promise<Entry[]> {
 /** Every prize won and not yet paid, oldest first. */
 export async function prizesOwed(days = 30): Promise<Entry[]> {
   // An agent's prize waits until it has said how it fooled the judge.
-  return (await recentEntries(days)).filter((e) => e.prize && !e.prize.paid && !debriefDue(e)).reverse();
+  const owed = (await recentEntries(days)).filter((e) => e.prize && !e.prize.paid && !debriefDue(e)).reverse();
+  // A player's prizes go wherever their account says, once it says anywhere. Until then they sit in their balance.
+  const people = [...new Set(owed.flatMap((e) => (e.prizeEligible && personOf(e) ? [personOf(e)!] : [])))];
+  const wallets = new Map(await Promise.all(people.map(async (id) => [id, (await readPlayer(id))?.wallet] as const)));
+  return owed.map((e) => (e.prizeEligible && personOf(e) ? { ...e, wallet: wallets.get(personOf(e)!) ?? e.wallet } : e));
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +160,8 @@ export async function humanSummary() {
     // What a player has won after being judged human and clearing 0, 1, 2... hunting rounds.
     prizes: prizeLadder(),
     prizesPerPerson: cfg.prizesPerPerson,
+    // Whether players must sign in with Google, and the public id the sign-in button needs.
+    signIn: cfg.googleClientId ? { required: true as const, clientId: cfg.googleClientId } : { required: false as const },
     entryFee: cfg.entryFeeTokens,
     symbol: cfg.tokenSymbol,
     paymentMode: cfg.paymentMode,
@@ -177,12 +183,17 @@ export async function humanSummary() {
 
 /** Record that a prize has been paid. */
 export async function markPrizePaid(entry: Pick<Entry, "roundId" | "id">, signature?: string): Promise<void> {
-  await updateRound(entry.roundId, (state) => {
-    const prize = state.entries[entry.id]?.prize;
+  const settled = await updateRound(entry.roundId, (state) => {
+    const paid = state.entries[entry.id];
+    const prize = paid?.prize;
     if (!prize) throw new GameError(404, "no_prize", "That entry has no prize");
+    const first = !prize.paid;
     prize.paid = true;
     prize.signature = signature;
+    return first && paid.prizeEligible ? { person: personOf(paid), tokens: prize.tokens } : null;
   });
+  // It leaves the player's balance.
+  if (settled?.person) await updatePlayer(settled.person, (p) => void (p.paid = (p.paid ?? 0) + settled.tokens));
 }
 
 /** What a player judged human has won after clearing 0, 1, 2... hunting rounds. */
@@ -244,6 +255,7 @@ const machineOf = (env: ClientEnv) =>
  * are often different people.
  */
 const samePlayer = (a: Entry, b: Entry) =>
+  Boolean(a.player && a.player === b.player) ||
   Boolean(a.deviceHash && a.deviceHash === b.deviceHash) ||
   Boolean(a.addressHash && a.addressHash === b.addressHash && a.machineHash && a.machineHash === b.machineHash);
 
@@ -327,6 +339,7 @@ interface NewEntry {
   plan: StepKind[];
   addressHash?: string;
   deviceHash?: string;
+  player?: string;
 }
 
 function addEntry(state: RoundState, input: NewEntry): Session {
@@ -357,6 +370,7 @@ function addEntry(state: RoundState, input: NewEntry): Session {
     userAgent: input.userAgent?.slice(0, 300),
     addressHash: input.addressHash,
     deviceHash: input.deviceHash,
+    player: input.player,
     consent: CONSENT_VERSION,
   };
   const token = issueToken(entry);
@@ -364,11 +378,62 @@ function addEntry(state: RoundState, input: NewEntry): Session {
   return sessionFor(state, entry, token);
 }
 
-/** What a new player's game starts with: an opening question, and hunting if there is material for it. */
-async function openGame(): Promise<{ first: Question; plan: StepKind[] }> {
-  const [first, hunting] = await Promise.all([nextQuestion(0, []), huntingAvailable()]);
-  return { first, plan: gamePlan(hunting) };
+/**
+ * Who an entry's player is across their games: their Google account if they
+ * signed in, or else the browser they played in.
+ */
+const personOf = (e: Pick<Entry, "player" | "deviceHash">) => e.player ?? e.deviceHash;
+
+/**
+ * Whether a person can start a game now, and whether it would include hunting.
+ *
+ * Hunting needs real answers the player hasn't judged yet, from other people.
+ * With enough of those for a whole game, they play the full game. A newcomer
+ * without them plays the questions alone, which is how the store of real
+ * answers gets started. Someone who has played before and has been through
+ * nearly everything there is has to wait for more people to play.
+ */
+export async function playStanding(person: string | undefined): Promise<{ ok: boolean; hunting: boolean }> {
+  const cfg = config();
+  const hunting = await huntingAvailable();
+  if (!person || cfg.hunting === "off" || cfg.huntRepeats === "on") return { ok: true, hunting };
+  const record = await readPlayer(person);
+  const fresh = hunting ? (await freshFor({ entryId: "", person, seen: record?.seen ?? [] })).length : 0;
+  if (fresh >= HUNT_LEVELS.length) return { ok: true, hunting: true };
+  return { ok: !record || record.games === 0, hunting: false };
 }
+
+/** For the lobby: who is at the browser, and whether they can start a game now. */
+export async function whoAmI(player: { id: string; name: string } | null, deviceId: string | undefined) {
+  const person = personOf({ player: player?.id, deviceHash: fingerprint("device", deviceId) });
+  const record = person ? await readPlayer(person) : null;
+  return {
+    signedIn: Boolean(player),
+    name: player?.name,
+    // False once they have judged nearly every real answer there is: they wait for more people to play.
+    canPlay: (await playStanding(person)).ok,
+    // Prizes won and not yet sent, and where they have asked for them to go.
+    balance: Math.max(0, (record?.won ?? 0) - (record?.paid ?? 0)),
+    wallet: record?.wallet,
+  };
+}
+
+/**
+ * Save where a player wants their balance sent. It is kept with their account
+ * (their Google sign-in, or their browser where sign-in is off), and what they
+ * have won and will win goes there when prizes are next paid out.
+ */
+export async function saveWallet(player: { id: string; name: string } | null, deviceId: string | undefined, wallet: unknown) {
+  if (config().googleClientId && !player) throw new GameError(401, "sign_in_needed", "Sign in with Google first");
+  const person = personOf({ player: player?.id, deviceHash: fingerprint("device", deviceId) });
+  if (!person) throw new GameError(400, "no_account", "Play a game first");
+  const address = typeof wallet === "string" ? wallet.trim() : "";
+  if (!isValidAddress(address)) throw new GameError(400, "bad_wallet", "That isn't a valid Solana address");
+  await updatePlayer(person, (p) => void (p.wallet = address));
+  return whoAmI(player, deviceId);
+}
+
+const COME_BACK = "You've been through nearly every real answer we have. Come back once more people have played.";
 
 // ---------------------------------------------------------------------------
 // Fees
@@ -527,6 +592,8 @@ export interface EnterInput extends PaymentProof {
   deviceId?: string;
   /** A form field people can't see. Anything in it was put there by a script. */
   website?: string;
+  /** The signed-in player: a hash of their Google account id. Needed when the site requires sign-in. */
+  player?: string;
 }
 
 export async function enter(input: EnterInput): Promise<Session> {
@@ -536,6 +603,12 @@ export async function enter(input: EnterInput): Promise<Session> {
   if (wallet && !isValidAddress(wallet)) throw new GameError(400, "bad_wallet", "That isn't a valid Solana address");
 
   if (input.website) throw new GameError(400, "not_allowed", "This side is for people. Agents play on the other side.");
+  if (cfg.googleClientId && !input.player) throw new GameError(401, "sign_in_needed", "Sign in with Google to play");
+  const deviceHash = fingerprint("device", input.deviceId);
+  const person = personOf({ player: input.player, deviceHash });
+  const standing = await playStanding(person);
+  // Someone coming back with a payment already made is past this point.
+  if (!standing.ok && !input.signature) throw new GameError(409, "come_back", COME_BACK);
   const from = fingerprint("address", input.clientAddress);
   const guard = (state: RoundState) => {
     if (from && cfg.gamesPerAddress > 0 && Object.values(state.entries).filter((e) => e.prizeEligible && e.addressHash === from).length >= cfg.gamesPerAddress) {
@@ -545,13 +618,15 @@ export async function enter(input: EnterInput): Promise<Session> {
 
   const settled = await settleFee(cfg.entryFeeTokens, { wallet, handle }, input, guard);
   if (settled.kind === "again") return settled.session;
-  const opening = await openGame();
-  return admit(
+  const first = await nextQuestion(0, []);
+  const session = await admit(
     settled,
     cfg.entryFeeTokens,
-    { handle, wallet, userAgent: input.userAgent, addressHash: from, deviceHash: fingerprint("device", input.deviceId), ...opening },
+    { handle, wallet, userAgent: input.userAgent, addressHash: from, deviceHash, player: input.player, first, plan: gamePlan(standing.hunting) },
     guard,
   );
+  if (person) await updatePlayer(person, (p) => void p.games++);
+  return session;
 }
 
 // ---------------------------------------------------------------------------
@@ -637,8 +712,11 @@ export interface PlayerResult {
   cancelled?: boolean;
   /** Agents: whether the judge took it for human. */
   impostor?: { fooled: boolean };
-  /** What they won, if anything, and whether there is somewhere to send it. `held`: not released until the agent's debrief is in. */
-  prize?: { tokens: number; symbol: string; payable: boolean; held?: boolean };
+  /**
+   * What they won, if anything, and whether there is somewhere to send it.
+   * `held`: not released until the agent's debrief is in. `banked`: added to the player's balance, to withdraw when they like.
+   */
+  prize?: { tokens: number; symbol: string; payable: boolean; held?: boolean; banked?: boolean };
   /** Agents that fooled the judge: what it wants to know, and whether they have answered. */
   debrief?: { questions: string[]; done: boolean };
 }
@@ -650,7 +728,13 @@ function playerResult(entry: Entry): PlayerResult {
   const cfg = config();
   const result = entry.result!;
   const prize = entry.prize
-    ? { tokens: entry.prize.tokens, symbol: cfg.tokenSymbol, payable: Boolean(entry.wallet), ...(debriefDue(entry) ? { held: true } : {}) }
+    ? {
+        tokens: entry.prize.tokens,
+        symbol: cfg.tokenSymbol,
+        payable: Boolean(entry.wallet),
+        ...(debriefDue(entry) ? { held: true } : {}),
+        ...(entry.prizeEligible && personOf(entry) ? { banked: true } : {}),
+      }
     : undefined;
   const base = { score: result.score, verdict: result.verdict, quip: result.quip, handle: entry.handle, prize };
   if (entry.agentKeyId) {
@@ -711,8 +795,8 @@ async function score(roundId: string, entryId: string): Promise<PlayerResult> {
           const wonToday = Object.values(s.entries).filter((o) => o.id !== e.id && o.prizeEligible && o.prize && samePlayer(o, e)).length;
           if (tokens > 0) {
             if (cfg.prizesPerPerson > 0 && wonToday >= cfg.prizesPerPerson) e.missedPrize = { tokens, why: "already_won" };
-            // With real tokens a prize needs somewhere to go.
-            else if (cfg.paymentMode !== "mock" && !e.wallet) e.missedPrize = { tokens, why: "no_address" };
+            // With real tokens a prize needs somewhere to go: the player's balance, or failing that an address.
+            else if (cfg.paymentMode !== "mock" && !e.wallet && !personOf(e)) e.missedPrize = { tokens, why: "no_address" };
             else e.prize = { tokens, reason: "hunter", wonAt: Date.now() };
           }
         }
@@ -725,6 +809,10 @@ async function score(roundId: string, entryId: string): Promise<PlayerResult> {
     return { finalState: s, scoredNow: first };
   });
   const scored = finalState.entries[entryId];
+
+  // A player's prize goes into their balance.
+  const winner = scoredNow && scored.prizeEligible && scored.prize ? personOf(scored) : undefined;
+  if (winner) await updatePlayer(winner, (p) => void (p.won = (p.won ?? 0) + scored.prize!.tokens));
 
   if (scoredNow && scored.label && scored.cohortId) {
     await recordExample(finalState, scored, scored.label, scored.cohortId, scored.agentKeyId ? "session" : "auto");
@@ -766,6 +854,7 @@ async function recordExample(
     cohortId,
     source,
     handle: entry.handle,
+    player: personOf(entry),
     device: entry.device,
     consent: entry.consent,
     questions: questionsOf(state, entry),
@@ -946,7 +1035,7 @@ export async function pickHunt(input: {
     if (!hunt.correct || entry.cancelled) entry.plan = planOf(state, entry).slice(0, stepOf(entry));
     const finished = stepOf(entry) >= planOf(state, entry).length;
     if (finished) entry.status = "scoring";
-    return { finished, hunt: { ...hunt } };
+    return { finished, hunt: { ...hunt }, person: personOf(entry) };
   }).catch(unknownRound);
 
   // Every pick is a person's judgement on a pair whose truth is known: keep it.
@@ -955,6 +1044,7 @@ export async function pickHunt(input: {
     at: now,
     roundId,
     hunterEntryId: entryId,
+    hunter: step.person,
     sourceEntryId: hunt.sourceEntryId,
     level: hunt.level,
     prompt: hunt.prompt,
@@ -990,21 +1080,27 @@ async function serveStep(roundId: string, entryId: string): Promise<AnswerOutcom
     if (plan[index] === "hunt") {
       const waiting = (entry.hunts ?? []).find((h) => h.pick === undefined);
       if (waiting) return { done: false, hunt: viewOf(waiting, (entry.hunts ?? []).indexOf(waiting) + 1), ...facing };
-      const hunt = await nextHunt(entry).catch((err) => {
+      const person = personOf(entry);
+      const seen = person && config().huntRepeats !== "on" ? ((await readPlayer(person))?.seen ?? []) : [];
+      const hunt = await nextHunt(entry, { person, seen }).catch((err) => {
         console.error("[hunt] could not prepare a round; skipping the rest of this player's hunts:", err);
         return null;
       });
-      await updateRound(roundId, (s) => {
+      const stored = await updateRound(roundId, (s) => {
         const e = s.entries[entryId];
-        if ((e.hunts ?? []).some((h) => h.pick === undefined)) return; // another request got there first
+        if ((e.hunts ?? []).some((h) => h.pick === undefined)) return false; // another request got there first
         if (hunt) {
           (e.hunts ??= []).push({ ...hunt, servedAt: Date.now() });
+          return true;
         } else {
           // Nothing left to show this player: carry on with the questions alone.
           e.plan = planOf(s, e).filter((kind, i) => i < stepOf(e) || kind !== "hunt");
           if (stepOf(e) >= e.plan.length) e.status = "scoring";
+          return false;
         }
       });
+      // Remembered from the moment it is shown, whether or not they go on to pick.
+      if (hunt && stored && person) await updatePlayer(person, (p) => void (p.seen.includes(seenKey(hunt)) || p.seen.push(seenKey(hunt))));
       continue;
     }
 

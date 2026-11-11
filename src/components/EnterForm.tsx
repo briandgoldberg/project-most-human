@@ -8,7 +8,7 @@ const field =
   "w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none";
 const label = "mb-1 block text-[11px] tracking-widest text-dim uppercase";
 
-/** Start a game on the human side: a handle, and, when prizes are paid in real tokens, somewhere to send one. */
+/** Start a game on the human side: just a handle. A wallet comes into it only if there is a fee to pay. */
 export function EnterForm({ summary }: { summary: HumanSummary }) {
   const router = useRouter();
   const [handle, setHandle] = useState("");
@@ -78,10 +78,10 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
         <input id="website" name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
       </div>
 
-      {onChain && (
+      {onChain && hasFee && (
         <div>
           <label htmlFor="wallet" className={label}>
-            Solana address {hasFee ? "" : "for your prizes"}
+            Solana address
           </label>
           <div className="flex gap-2">
             <input
@@ -89,10 +89,10 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
               className={field}
               value={wallet}
               onChange={(e) => setWallet(e.target.value)}
-              placeholder={hasFee ? "connect a wallet to pay the fee" : "without one, prizes can't be paid"}
+              placeholder="connect a wallet to pay the fee"
               autoComplete="off"
               spellCheck={false}
-              required={hasFee}
+              required
             />
             <button type="button" onClick={connect} className="shrink-0 border border-line px-3 hover:border-paper">
               Connect

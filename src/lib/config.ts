@@ -19,6 +19,16 @@ export function ownerPassword(): string | undefined {
   return env("OWNER_PASSWORD") ?? (process.env.NODE_ENV === "production" ? undefined : "owner-dev");
 }
 
+/**
+ * What signs the passes of signed-in players and scrambles their account ids.
+ * Changing it signs everyone out and makes every player look new.
+ */
+export function sessionSecret(): string {
+  const secret = env("SESSION_SECRET") ?? env("STORE_SECRET") ?? (process.env.NODE_ENV === "production" ? undefined : "dev-session-secret");
+  if (!secret) throw new Error("SESSION_SECRET (or STORE_SECRET) is needed for Google sign-in");
+  return secret;
+}
+
 export type PaymentMode = "mock" | "solana";
 
 export function config() {
@@ -35,6 +45,13 @@ export function config() {
     tokenSymbol: env("TOKEN_SYMBOL") ?? (paymentMode === "mock" ? "PLAY" : "TOKEN"),
     /** "off" removes the Bot Hunter rounds from players' games. */
     hunting: (env("BOT_HUNTER") ?? "on") as "on" | "off",
+    /**
+     * The Google OAuth client id for this site. When set, the human side needs a Google sign-in:
+     * one account, one player. Unset, anyone can play and a browser cookie stands in for the account.
+     */
+    googleClientId: env("GOOGLE_CLIENT_ID"),
+    /** "on" lets a player be shown real answers they have already judged. Off by default: when they run out, they wait for more. */
+    huntRepeats: (env("HUNT_REPEATS") ?? "off") as "on" | "off",
     /** What a player wins for being judged human, and what each hunting round they clear adds, in order. */
     humanPrizeTokens: num("HUMAN_PRIZE_TOKENS", 20),
     huntRoundPrizes: (env("HUNT_ROUND_PRIZES") ?? "20,40,60,80,120,160").split(",").map((x) => Number(x.trim()) || 0),

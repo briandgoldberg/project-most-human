@@ -264,6 +264,8 @@ export interface Entry {
   addressHash?: string;
   deviceHash?: string;
   machineHash?: string;
+  /** Players who signed in: a one-way hash of their Google account id. */
+  player?: string;
   /** Made with the house's own agent key: never in line for a prize. */
   house?: boolean;
   /** What this entry won, if anything. */
@@ -376,6 +378,8 @@ export interface TrainingExample {
    */
   source?: "session" | "board" | "auto";
   handle: string;
+  /** Who this was, as far as the game can tell them from others: a hash of their account, or else of their browser's cookie. */
+  player?: string;
   device?: Device;
   consent?: string;
   questions: Question[];

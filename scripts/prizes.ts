@@ -27,6 +27,8 @@ const { values: args } = parseArgs({
     execute: { type: "boolean", default: false },
     "treasury-key": { type: "string" },
     only: { type: "string" },
+    // How far back to look. Players may leave prizes in their balance for a while before asking for them.
+    days: { type: "string", default: "120" },
   },
 });
 
@@ -39,7 +41,7 @@ function treasuryKeypair(): Keypair {
 
 async function main() {
   const cfg = config();
-  const owed = (await prizesOwed()).filter((e) => !args.only || e.id === args.only);
+  const owed = (await prizesOwed(Math.max(1, Number(args.days) || 120))).filter((e) => !args.only || e.id === args.only);
   if (owed.length === 0) {
     console.log("Nothing is owed.");
     return;
@@ -48,7 +50,7 @@ async function main() {
   console.log(`${owed.length} prize(s) owed, ${total} ${cfg.tokenSymbol} in all:`);
   for (const e of owed) {
     console.log(
-      `  ${String(e.prize!.tokens).padStart(8)} ${cfg.tokenSymbol}  ${e.prize!.reason === "hunter" ? "hunter" : "agent "}  ${e.handle.padEnd(20)}  ${e.wallet ?? "(no address given)"}  [${e.id}]`,
+      `  ${String(e.prize!.tokens).padStart(8)} ${cfg.tokenSymbol}  ${e.prize!.reason === "hunter" ? "hunter" : "agent "}  ${e.handle.padEnd(20)}  ${e.wallet ?? "(in their balance: no address yet)"}  [${e.id}]`,
     );
   }
   if (!args.execute) {
@@ -70,7 +72,7 @@ async function main() {
   const from = getAssociatedTokenAddressSync(mint, treasury, true, tokenProgram);
   for (const e of owed) {
     if (!e.wallet) {
-      console.log(`  skipped ${e.handle}: no address to pay`);
+      console.log(`  left in ${e.handle}'s balance: they haven't asked for it yet`);
       continue;
     }
     const to = new PublicKey(e.wallet);

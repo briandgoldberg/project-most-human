@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { api, type HumanSummary } from "@/lib/client";
+import { useEffect, useState, type FormEvent } from "react";
+import { api, type HumanSummary, type Me } from "@/lib/client";
 import { EnterForm } from "./EnterForm";
+import { GoogleSignIn } from "./GoogleSignIn";
 import { Shell } from "./Shell";
 import { SideToggle } from "./SideToggle";
 
@@ -51,17 +52,146 @@ function Board({ summary }: { summary: HumanSummary }) {
   );
 }
 
+const short = (w: string) => `${w.slice(0, 4)}…${w.slice(-4)}`;
+
+/** What a player has won and not yet been sent, and where to send it. The address is kept with their account. */
+function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (me: Me) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [wallet, setWallet] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onChain = summary.paymentMode === "solana";
+  if (me.balance <= 0 && !me.wallet) return null;
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      onMe(await api.saveWallet(wallet));
+      setEditing(false);
+      setWallet("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border border-line p-4">
+      <div className="text-[11px] tracking-widest text-dim uppercase">Your balance</div>
+      <div className="font-display text-3xl">
+        {fmt(me.balance)} {summary.symbol}
+      </div>
+      {onChain && me.wallet && !editing && (
+        <p className="mt-2 text-sm text-dim">
+          {me.balance > 0 ? "It will be sent to" : "Prizes are sent to"} <span className="text-paper">{short(me.wallet)}</span> when
+          prizes are next paid out.{" "}
+          <button type="button" className="underline underline-offset-4" onClick={() => setEditing(true)}>
+            Change address
+          </button>
+        </p>
+      )}
+      {onChain && (!me.wallet || editing) && (
+        <form onSubmit={save} className="mt-3 space-y-2">
+          <label htmlFor="withdraw-to" className="block text-sm text-dim">
+            To withdraw, say where to send it. No rush: your balance stays with your account.
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="withdraw-to"
+              className="w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none"
+              value={wallet}
+              onChange={(e) => setWallet(e.target.value)}
+              placeholder="your Solana address"
+              autoComplete="off"
+              spellCheck={false}
+              required
+            />
+            <button type="submit" disabled={busy} className="shrink-0 border border-line px-4 hover:border-paper disabled:opacity-40">
+              {busy ? "Saving…" : "Withdraw"}
+            </button>
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-pulse">
+              {error}
+            </p>
+          )}
+        </form>
+      )}
+    </div>
+  );
+}
+
+/** The way into a game: sign in if the site asks for it, then the form, unless there is nothing new to show this player. */
+function Door({ summary, me, onMe }: { summary: HumanSummary; me: Me | null; onMe: (me: Me | null) => void }) {
+  if (!me) return <p className="text-sm text-dim">One moment…</p>;
+
+  if (summary.signIn.required && !me.signedIn) {
+    return (
+      <div className="space-y-3">
+        <h2 className="font-display text-2xl">Sign in to play</h2>
+        <p className="max-w-md text-sm text-dim">One Google account, one player. The game keeps a scrambled id for your account, not your email.</p>
+        <GoogleSignIn clientId={summary.signIn.clientId} onSignedIn={onMe} />
+      </div>
+    );
+  }
+
+  const account = me.signedIn && (
+    <p className="text-xs text-dim">
+      Signed in as {me.name}.{" "}
+      <button
+        type="button"
+        className="underline underline-offset-4"
+        onClick={async () => {
+          await api.signOut().catch(() => undefined);
+          onMe(await api.me().catch(() => null));
+        }}
+      >
+        Sign out
+      </button>
+    </p>
+  );
+
+  if (!me.canPlay) {
+    return (
+      <div className="space-y-3">
+        <div className="border border-line p-4">
+          <h2 className="font-display text-2xl">You&rsquo;ve seen nearly everyone</h2>
+          <p className="mt-2 max-w-md text-sm text-dim">
+            You&rsquo;ve judged almost every real answer we have. Come back once more people have played and there will
+            be new ones to hunt.
+          </p>
+        </div>
+        <Balance summary={summary} me={me} onMe={onMe} />
+        {account}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <EnterForm summary={summary} />
+      <Balance summary={summary} me={me} onMe={onMe} />
+      {account}
+    </div>
+  );
+}
+
 export function Lobby() {
   const [summary, setSummary] = useState<HumanSummary | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const next = await api.summary();
+        const [next, who] = await Promise.all([api.summary(), api.me()]);
         if (alive) {
           setSummary(next);
+          setMe(who);
           setFailed(false);
         }
       } catch {
@@ -82,7 +212,7 @@ export function Lobby() {
       <section className="py-8 sm:py-10">
         <h1 className="font-display text-5xl leading-[1.05] sm:text-7xl">Can you spot the bot?</h1>
         <p className="mt-4 text-[13px] text-dim sm:text-sm sm:whitespace-nowrap">
-          Prove you&rsquo;re human. Then pick the real person. One mistake and you&rsquo;re out.
+          Prove you&rsquo;re human. Then spot the bots. The further you get, the more you win.
         </p>
       </section>
 
@@ -97,7 +227,7 @@ export function Lobby() {
           </section>
 
           <section className="py-8">
-            <EnterForm summary={summary} />
+            <Door summary={summary} me={me} onMe={setMe} />
           </section>
 
           <section>
@@ -113,12 +243,12 @@ export function Lobby() {
             <div>
               <div className="mb-1 text-paper">Hunt</div>
               Two answers to one question: a person&rsquo;s and a machine&rsquo;s. Pick the person. It gets harder each
-              round, and one wrong pick ends your game.
+              round, and a wrong pick ends the run.
             </div>
             <div>
               <div className="mb-1 text-paper">Win</div>
-              {fmt(summary.prizes[0])} {summary.symbol} for proving you&rsquo;re human. More for every round you clear,
-              and you say what gave the machine away.
+              {fmt(summary.prizes[0])} {summary.symbol} for proving you&rsquo;re human, more for every round you clear.
+              Prizes add up in your balance; withdraw whenever you like.
             </div>
           </section>
 
@@ -148,6 +278,9 @@ export function Lobby() {
               </p>
             )}
             <p>
+              {summary.signIn.required &&
+                "Signing in with Google is only to tell one player from another: the game keeps a scrambled id for your account, not your name or email. "}
+              {summary.paymentMode === "solana" && "A Solana address you give to withdraw is kept with your account. "}
               While you play, the game records your keystroke timing, edits, pointer movement, drawing strokes and
               browser details, and the judge uses them along with your answers. By playing you agree these recordings
               and your answers are kept; that your answers and a summary of how you typed them may be shown, without

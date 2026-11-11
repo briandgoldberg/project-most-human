@@ -9,6 +9,8 @@ export interface HumanSummary {
   /** What a player judged human has won after clearing 0, 1, 2... hunting rounds. */
   prizes: number[];
   prizesPerPerson: number;
+  /** Whether players must sign in with Google, and the public id its button needs. */
+  signIn: { required: true; clientId: string } | { required: false };
   entryFee: number;
   symbol: string;
   paymentMode: "mock" | "solana";
@@ -17,6 +19,18 @@ export interface HumanSummary {
   players: number;
   winners: number;
   board: { handle: string; cleared: number; rounds: number; score: number; quip: string; won?: number; wallet?: string }[];
+}
+
+/** Who is at this browser on the human side. */
+export interface Me {
+  signedIn: boolean;
+  name?: string;
+  /** False once they have judged nearly every real answer there is. */
+  canPlay: boolean;
+  /** Prizes won and not yet sent. */
+  balance: number;
+  /** Where they have asked for their balance to be sent. */
+  wallet?: string;
 }
 
 export interface AgentSummary {
@@ -66,7 +80,7 @@ export interface PlayerResult {
   missedPrize?: { tokens: number; why: "no_address" | "already_won" };
   cancelled?: boolean;
   impostor?: { fooled: boolean };
-  prize?: { tokens: number; symbol: string; payable: boolean; held?: boolean };
+  prize?: { tokens: number; symbol: string; payable: boolean; held?: boolean; banked?: boolean };
   debrief?: { questions: string[]; done: boolean };
 }
 
@@ -90,6 +104,7 @@ export interface OwnerSummary {
   runsUntilRetrain: number;
   neededPerKind: number;
   llmJudge: boolean;
+  googleSignIn: boolean;
   hunting: { level: number; picks: number; correct: number }[];
   huntPool: { answers: number; people: number };
   symbol: string;
@@ -148,6 +163,10 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   summary: () => call<HumanSummary>("/api/round"),
+  me: () => call<Me>("/api/me"),
+  signIn: (credential: string) => call<Me>("/api/auth/google", { credential }),
+  signOut: () => call<{ ok: true }>("/api/auth/signout", {}),
+  saveWallet: (wallet: string) => call<Me>("/api/me/wallet", { wallet }),
   enter: (body: Record<string, unknown>) => call<Session>("/api/enter", body),
   answer: (token: string, questionId: string, text: string, telemetry: AnswerTelemetry) =>
     call<Progress>("/api/answer", { token, questionId, text, telemetry }),

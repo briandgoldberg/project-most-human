@@ -121,6 +121,13 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
         </p>
       )}
 
+      {!summary.googleSignIn && (
+        <p className="mt-6 border border-pulse p-3 text-xs text-pulse">
+          Google sign-in is off, so anyone can play the human side without an account. It switches on when the server
+          has a Google OAuth client id (GOOGLE_CLIENT_ID).
+        </p>
+      )}
+
       <section className="py-8">
         <h2 className={heading}>Bot hunter</h2>
         <p className="mt-3 text-sm text-dim">
@@ -148,7 +155,7 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
               <li key={p.id} className="flex flex-wrap items-baseline gap-x-3 py-2.5 text-sm">
                 <span className="min-w-0 flex-1 break-all">{p.handle}</span>
                 <span className="text-xs text-dim">{p.reason === "hunter" ? "hunter" : "agent that fooled the judge"}</span>
-                <span className="text-xs text-dim">{p.wallet ? short(p.wallet) : "no address given"}</span>
+                <span className="text-xs text-dim">{p.wallet ? short(p.wallet) : "in their balance"}</span>
                 <span className="w-24 text-right tabular-nums">
                   {fmt(p.tokens)} {summary.symbol}
                 </span>
@@ -157,7 +164,8 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
           </ol>
         )}
         <p className="mt-2 text-xs text-dim">
-          Pay them with <code>npm run prizes -- --execute</code>, which needs the treasury key. The website never holds it.
+          Pay them with <code>npm run prizes -- --execute</code>, which needs the treasury key. The website never holds
+          it. A player&rsquo;s prizes stay in their balance until they give an address to withdraw to.
         </p>
       </section>
 

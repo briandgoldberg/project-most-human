@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { config } from "./config";
 import { llmWriteDecoy } from "./judge/llm";
 import { readDecoy, readTraining, saveDecoy } from "./store";
@@ -27,6 +27,8 @@ export const MIN_POOL = 8;
 
 export interface HumanAnswer {
   sourceEntryId: string;
+  /** Who wrote it, where known, so nobody is shown their own answers. */
+  player?: string;
   questionId: string;
   prompt: string;
   text: string;
@@ -108,9 +110,10 @@ const CACHE_MS = 60_000;
 /** Every real answer currently available to hunt with. */
 export async function humanPool(now = Date.now()): Promise<HumanAnswer[]> {
   if (cache && now - cache.at < CACHE_MS) return cache.pool;
-  const sessions = new Map<string, { questionId: string; prompt: string; text: string; evidence: Evidence }[]>();
+  const sessions = new Map<string, { questionId: string; prompt: string; text: string; evidence: Evidence; player?: string }[]>();
   const add = (
     entryId: string,
+    player: string | undefined,
     device: Device | undefined,
     questions: { id: string; kind: string; prompt: string }[],
     answers: { questionId: string; text: string; features?: Partial<AnswerFeatures> }[],
@@ -119,7 +122,7 @@ export async function humanPool(now = Date.now()): Promise<HumanAnswer[]> {
       const q = questions.find((x) => x.id === a.questionId);
       if (!q || q.kind !== "text" || !showable(a.text)) return [];
       const text = a.text.trim();
-      return [{ questionId: q.id, prompt: q.prompt, text, evidence: evidenceOf(text, a.features, device) }];
+      return [{ questionId: q.id, prompt: q.prompt, text, evidence: evidenceOf(text, a.features, device), player }];
     });
     if (items.length) sessions.set(entryId, items);
   };
@@ -129,7 +132,7 @@ export async function humanPool(now = Date.now()): Promise<HumanAnswer[]> {
   for (const e of await readTraining()) {
     if (e.label !== "human") continue;
     if (e.source === "auto" && !SHOWABLE_CONSENT.test(e.consent ?? "")) continue;
-    add(e.entryId, e.device, e.questions, e.answers);
+    add(e.entryId, e.player, e.device, e.questions, e.answers);
   }
 
   const pool = [...sessions].flatMap(([sourceEntryId, items]) =>
@@ -175,16 +178,35 @@ async function decoyFor(answer: HumanAnswer, level: number): Promise<string> {
   return text;
 }
 
+/** A short name for one real answer, for remembering who has been shown it. */
+export const seenKey = (answer: { sourceEntryId: string; prompt: string }) =>
+  createHash("sha256").update(`${answer.sourceEntryId}:${answer.prompt}`).digest("hex").slice(0, 12);
+
+/** Who is asking for a hunt: so they never get their own answers, or one they have judged before. */
+export interface Hunter {
+  /** The game being played. */
+  entryId: string;
+  /** The person, across their games, where known. */
+  person?: string;
+  /** Real answers this person has already been shown, in this game or earlier ones. */
+  seen: Iterable<string>;
+}
+
+/** The real answers that could still be put in front of this person. */
+export async function freshFor(hunter: Hunter): Promise<HumanAnswer[]> {
+  const seen = new Set(hunter.seen);
+  return (await humanPool()).filter(
+    (a) => a.sourceEntryId !== hunter.entryId && !(hunter.person && a.player === hunter.person) && !seen.has(seenKey(a)),
+  );
+}
+
 /**
  * Build the next hunt for a player, or null if there is nothing left to show
  * them. Players never get their own answers, or the same answer twice.
  */
-export async function nextHunt(entry: Pick<Entry, "id" | "hunts">): Promise<Hunt | null> {
+export async function nextHunt(entry: Pick<Entry, "id" | "hunts">, who: { person?: string; seen?: Iterable<string> } = {}): Promise<Hunt | null> {
   const played = entry.hunts ?? [];
-  const seen = new Set(played.map((h) => `${h.sourceEntryId}:${h.prompt}`));
-  const candidates = (await humanPool()).filter(
-    (a) => a.sourceEntryId !== entry.id && !seen.has(`${a.sourceEntryId}:${a.prompt}`),
-  );
+  const candidates = await freshFor({ entryId: entry.id, person: who.person, seen: [...(who.seen ?? []), ...played.map(seenKey)] });
   if (!candidates.length) return null;
 
   let level = HUNT_LEVELS[Math.min(played.length, HUNT_LEVELS.length - 1)];

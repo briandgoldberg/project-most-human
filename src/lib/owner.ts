@@ -94,6 +94,7 @@ export async function ownerSummary() {
     runsUntilRetrain: Math.max(0, cfg.retrainEvery - (examples.length - trainedOn)),
     neededPerKind: MIN_EXAMPLES_PER_CLASS,
     llmJudge: cfg.judge.llmEnabled,
+    googleSignIn: Boolean(cfg.googleClientId),
     // How often real players pick the person, by how good the decoy was.
     hunting: [1, 2, 3].map((level) => {
       const at = hunts.filter((h) => h.level === level);

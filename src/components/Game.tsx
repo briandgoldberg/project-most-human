@@ -451,7 +451,9 @@ function Result({ result, token, onResult }: { result: PlayerResult; token?: str
             </span>{" "}
             {prize.held
               ? "It is held until the debrief below is in."
-              : prize.payable
+              : prize.banked
+                ? "It's in your balance. Withdraw it from the home page whenever you like."
+                : prize.payable
                 ? "It will be sent to the address you gave."
                 : "You didn't give an address to send it to, so it can't be paid out this time."}
           </p>
