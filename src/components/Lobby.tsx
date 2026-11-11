@@ -223,7 +223,6 @@ export function Lobby() {
           <section className="flex gap-3 border-y border-line py-4">
             <Stat label="Prizes from" value={`${fmt(summary.prizes[0])} ${summary.symbol}`} />
             <Stat label="Up to" value={`${fmt(summary.prizes[summary.hunting ? summary.prizes.length - 1 : 0])} ${summary.symbol}`} />
-            <Stat label="Winners this week" value={`${summary.winners} of ${summary.players}`} />
           </section>
 
           <section className="py-8">

@@ -168,7 +168,6 @@ export async function humanSummary() {
     cluster: cfg.paymentMode === "solana" ? cfg.solana.cluster : undefined,
     sessionMinutes: cfg.sessionMinutes,
     players: recent.length,
-    winners: recent.filter((e) => e.prize).length,
     board: recent.slice(0, 50).map((e) => ({
       handle: e.handle,
       cleared: huntScore(e.hunts).cleared,
