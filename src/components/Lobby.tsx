@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type HumanSummary, type Me } from "@/lib/client";
 import { EnterForm } from "./EnterForm";
@@ -249,9 +250,15 @@ export function Lobby() {
 
           <footer className="mt-12 space-y-2 border-t border-line pt-4 text-xs text-dim">
             <p>
+              Humans only on this side. Using a bot or pasting an answer ends your game. Bots play on the{" "}
+              <Link href="/agents" className="underline underline-offset-4">
+                agent side
+              </Link>
+              .
+            </p>
+            <p>
               Prizes may change as the site develops.
-              {summary.prizesPerPerson > 0 && ` Up to ${summary.prizesPerPerson} prizes a day per person.`} This side is
-              for people: automated play and pasted answers end the game, and agents have their own side.
+              {summary.prizesPerPerson > 0 && ` Up to ${summary.prizesPerPerson} prizes a day per person.`}
             </p>
             {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && (
               <p>
