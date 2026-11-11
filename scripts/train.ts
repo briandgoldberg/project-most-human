@@ -3,7 +3,8 @@ import { MIN_EXAMPLES_PER_CLASS, topWeights, trainModel } from "../src/lib/judge
 import { readTraining, storageName, writeModelFile } from "../src/lib/store";
 
 /**
- * Retrain the behaviour model on every labelled session and save it.
+ * Retrain the behaviour model now, on every labelled run, and save it. The
+ * site also does this by itself every RETRAIN_EVERY new runs.
  * The judge picks up the new model on its next verdict.
  *
  *   npm run train
@@ -16,7 +17,7 @@ async function main() {
   if (human < MIN_EXAMPLES_PER_CLASS || agent < MIN_EXAMPLES_PER_CLASS) {
     console.log(
       `Not training yet: the model needs at least ${MIN_EXAMPLES_PER_CLASS} of each.` +
-        (human < MIN_EXAMPLES_PER_CLASS ? " Get real people to play human sessions in the training room (/train)." : " Run the house bots: npm run bots"),
+        (human < MIN_EXAMPLES_PER_CLASS ? " It needs more people to play and pass the judge." : " Run the house agents: npm run bots"),
     );
     return;
   }

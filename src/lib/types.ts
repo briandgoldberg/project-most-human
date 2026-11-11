@@ -5,6 +5,29 @@ export type QuestionKind = "text" | "draw";
 
 export type Device = "phone" | "tablet" | "desktop";
 
+/** One step of a game: a question to answer, or a Bot Hunter round. */
+export type StepKind = "fresh" | "followup" | "draw" | "hunt";
+
+/**
+ * One Bot Hunter round: a real person's answer to a question next to a
+ * machine-written answer to the same question. The player picks the person.
+ */
+export interface Hunt {
+  id: string;
+  /** 1 = a generic machine answer, 2 = a casual one, 3 = one imitating this particular person. */
+  level: number;
+  prompt: string;
+  options: [string, string];
+  /** Which option the person wrote. Never sent to the player before they pick. */
+  humanIndex: 0 | 1;
+  /** Whose answer the human option is. */
+  sourceEntryId: string;
+  servedAt: number;
+  pick?: 0 | 1;
+  correct?: boolean;
+  answeredAt?: number;
+}
+
 export interface Question {
   id: string;
   kind: QuestionKind;
@@ -188,6 +211,16 @@ export interface Entry {
   questions?: Question[];
   /** True when questions are being written one at a time for this player. */
   adaptive?: boolean;
+  /** The order of this player's game: which steps are questions and which are hunts. */
+  plan?: StepKind[];
+  /** Bot Hunter rounds played so far. */
+  hunts?: Hunt[];
+  /** The judge took this player for a bot, so their game doesn't count: no board, no prize. */
+  cancelled?: boolean;
+  /** Made with the house's own agent key: never in line for a prize. */
+  house?: boolean;
+  /** What this entry won, if anything. */
+  prize?: Prize;
   prizeEligible: boolean;
   status: "playing" | "scoring" | "scored";
   /** Which wording of the data notice this player was shown when they entered. */
@@ -224,7 +257,16 @@ export interface Payout {
   dryRun: boolean;
 }
 
-/** A builder's licence to enter agents for the bounty. */
+export interface Prize {
+  tokens: number;
+  /** "hunter": a player who reached the prize round. "fooled": an agent the judge took for human. */
+  reason: "hunter" | "fooled";
+  wonAt: number;
+  paid?: boolean;
+  signature?: string;
+}
+
+/** A builder's licence to enter agents. */
 export interface AgentKey {
   id: string;
   /** What the board calls this builder. */
@@ -234,6 +276,8 @@ export interface AgentKey {
   secretHash: string;
   createdAt: number;
   disabled?: boolean;
+  /** The house's own key, for its test agents. Runs with it can't win the bounty. */
+  house?: boolean;
 }
 
 export interface RoundState {
@@ -255,8 +299,12 @@ export interface TrainingExample {
   label: Kind;
   /** The cohort that vouches for the label. */
   cohortId: string;
-  /** "session" = played in the training room; "board" = a competition entry labelled afterwards. */
-  source?: "session" | "board";
+  /**
+   * How the label is known. "session": an agent, known by its key. "auto": a
+   * player the judge was confident about, taken to be human. "board": an older
+   * entry the owner labelled by hand.
+   */
+  source?: "session" | "board" | "auto";
   handle: string;
   device?: Device;
   consent?: string;

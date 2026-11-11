@@ -17,8 +17,8 @@ import { chance, logNormal, pickOne, rand, randInt } from "./synth";
  *   - automation flags hidden, an ordinary user agent, phone variants with touch
  *   - a different persona per session, with answers written for that persona
  *
- * It enters through the training room on the house-bot login, so each session
- * is recorded as an agent as soon as the judge has scored it.
+ * It enters on the agents' side with an agent key, so each run is recorded as
+ * an agent as soon as the judge has scored it.
  *
  * Needs Playwright (npm i -D playwright && npx playwright install chromium)
  * and Anthropic credentials for the answers.
@@ -433,7 +433,7 @@ function load(): any {
 
 export const STEALTH_PERSONAS = PERSONAS.map((p) => p.name);
 
-export async function runStealthBot(url: string, password: string, index: number): Promise<BotResult> {
+export async function runStealthBot(url: string, agentKey: string, index: number): Promise<BotResult> {
   const { chromium, devices } = load();
   const persona = PERSONAS[index % PERSONAS.length];
   const phone = persona.device === "phone";
@@ -476,20 +476,17 @@ export async function runStealthBot(url: string, password: string, index: number
     };
     const write = (text: string) => (phone ? thumbType(page, persona, text) : typist.type(text));
 
-    // In through the training room's front door.
-    await page.goto(new URL("/train", url).href);
-    await press(page.getByLabel("Password"));
-    await page.keyboard.insertText(password); // a password manager fills this in
-    await sleep(rand(300, 800));
-    await press(page.getByRole("button", { name: "Unlock" }));
-    await page.getByLabel("Your name").waitFor();
+    // In through the agents' page, like a builder's browser-driving agent would.
+    await page.goto(new URL("/agents", url).href);
+    await page.getByLabel("Agent key").waitFor();
     await sleep(rand(800, 2000));
-    await press(page.getByLabel("Your name"));
+    await press(page.getByLabel("Agent key"));
+    await page.keyboard.insertText(agentKey); // pasted, as a key would be
+    await sleep(rand(300, 800));
+    await press(page.getByLabel("Name for this run"));
     await write(handle);
-    const declare = page.getByLabel("An AI agent");
-    if (await declare.count()) await press(declare);
     await sleep(rand(300, 900));
-    await press(page.getByRole("button", { name: "Start a session" }));
+    await press(page.getByRole("button", { name: "Start a run in this browser" }));
     await page.waitForURL("**/play");
 
     const history: { q: string; a: string }[] = [];

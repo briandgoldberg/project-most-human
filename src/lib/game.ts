@@ -1,30 +1,33 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { config, type Cohort } from "./config";
+import { config } from "./config";
+import { HUNT_LEVELS, clearHuntCache, huntScore, huntingAvailable, nextHunt } from "./hunt";
+import { QUESTION_PLAN, gamePlan, nextQuestion } from "./interview";
 import { judgeEntry } from "./judge";
-import { QUESTION_PLAN, nextQuestion } from "./interview";
 import { isValidAddress } from "./payments/address";
 import { MAX_ANSWER_CHARS, bankQuestionsFor } from "./questions";
-import { appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
+import { appendHuntRecord, appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
 import { aggregateFeatures, deviceOf, extractAnswerFeatures } from "./telemetry/features";
 import { sanitizeTelemetry } from "./telemetry/sanitize";
-import type { AgentKey, Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, RoundState } from "./types";
+import type { AgentKey, Entry, EntryPayment, Hunt, JudgeResult, Kind, PaymentIntent, Question, RoundState, StepKind } from "./types";
 
 /**
- * The game has three doors into the same judge:
+ * The game has two sides and one judge, and it never closes.
  *
- *   The daily competition (public). Players pay the entry fee, answer the
- *   day's questions, and the top score takes the pool. Nobody here is labelled.
+ *   The human side (/). A player answers questions that show they are a
+ *   person, and in between hunts bots: picking the real person's answer out of
+ *   a pair, round after round, until they miss. Clear enough rounds and they
+ *   win the hunter prize. If the judge takes a player for a bot, their game is
+ *   cancelled: no board, no prize.
  *
- *   The training room (private, password-gated). The owner, their friends and
- *   the house bots play free sessions whose truth (human or agent) is known.
- *   The judge scores them exactly as it scores the public, without being told
- *   which they are; the truth is attached only after the score is final, and
- *   the pair is saved as training data.
+ *   The bot side (/agents). Builders send agents, with a key and for a fee,
+ *   to pass as people. An agent the judge takes for human wins a prize.
  *
- *   The agent bounty (public, needs an agent key). Builders send agents to
- *   pass as people. The judge is not told these are agents either. Once
- *   scored, each is revealed, saved as training data, and ranked on its own
- *   board; the best one that was judged human wins the bounty.
+ * The judge scores everyone the same way and is never told which side they
+ * came in on. What it learns from, it learns afterwards:
+ *   - an agent is known to be an agent, because it holds a key;
+ *   - a player it was confident about is taken to be human.
+ * Both are saved as training examples once the score is final, and players'
+ * answers become the material other players hunt with.
  */
 
 export class GameError extends Error {
@@ -45,19 +48,31 @@ const solana = () => import("./payments/solana");
 /**
  * The wording of the data notice shown at entry. Change this when the notice
  * changes, so every session records which one its player saw.
- *   v2: adds that recordings may be kept and used for research and datasets.
+ *   v2: recordings may be kept and used for research and datasets.
+ *   v3: answers may also be shown, without a name, to other players.
  */
-export const CONSENT_VERSION = "v2";
+export const CONSENT_VERSION = "v3";
+
+/** At or above this the judge takes a player for a person; below it, for a bot. */
+export const HUMAN_AT = 50;
+/** A player the judge scores at least this is taken to be human for training, and their answers may be hunted with. */
+export const CONFIDENT_HUMAN_AT = 60;
+/** Cohort names under which examples are filed. */
+export const AGENT_COHORT = "agents";
+export const PLAYER_COHORT = "players";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const INTENT_TTL_MS = 20 * 60 * 1000;
 const HANDLE = /^[A-Za-z0-9][A-Za-z0-9 _.-]{1,19}$/;
 
 // ---------------------------------------------------------------------------
-// Rounds
+// Days
 // ---------------------------------------------------------------------------
 
-/** A round is one UTC day. */
+/**
+ * The game is continuous, but its records are kept one document per UTC day
+ * so no single document grows without end. ("Round" in the names below is
+ * left over from when each day was a separate contest.)
+ */
 export function roundIdFor(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10);
 }
@@ -69,8 +84,8 @@ async function createRound(roundId: string): Promise<RoundState> {
       id: roundId,
       startsAt,
       endsAt: startsAt + DAY_MS,
-      // Players each get their own questions now (see interview.ts). This shared
-      // set is kept only so entries from before that change can still be read.
+      // Players each get their own questions (see interview.ts). This shared set
+      // is kept only so entries from before that change can still be read.
       questions: bankQuestionsFor(roundId, config().questionSalt),
       questionSource: "bank",
       createdAt: Date.now(),
@@ -88,87 +103,117 @@ function withRound<T>(roundId: string, fn: (state: RoundState) => T | Promise<T>
 /** The questions this entry has been asked so far. */
 const questionsOf = (state: RoundState, entry: Entry): Question[] => entry.questions ?? state.round.questions;
 
-/** How many questions this entry will be asked in all. */
-const totalOf = (state: RoundState, entry: Entry): number =>
-  entry.adaptive ? QUESTION_PLAN.length : questionsOf(state, entry).length;
-
-/** Competition entries only. Training sessions never count toward the pool or the board. */
-const competitors = (state: RoundState): Entry[] => Object.values(state.entries).filter((e) => e.prizeEligible);
-
-export function poolTokens(state: RoundState): number {
-  const gross = competitors(state).reduce((sum, e) => sum + e.payment.amountTokens, 0);
-  return Math.floor(gross * (1 - config().rakeBps / 10_000) * 1e6) / 1e6;
+/** The steps of this entry's game, in order. */
+function planOf(state: RoundState, entry: Entry): StepKind[] {
+  if (entry.plan) return entry.plan;
+  if (entry.adaptive) return [...QUESTION_PLAN];
+  return questionsOf(state, entry).map((q) => (q.kind === "draw" ? "draw" : "fresh"));
 }
 
-/** Scored competition entries, best first. Ties go to whoever finished earlier. */
-export function ranked(state: RoundState): Entry[] {
-  return competitors(state)
+/** How many steps this entry has completed. */
+const stepOf = (entry: Entry): number => entry.answers.length + (entry.hunts ?? []).filter((h) => h.pick !== undefined).length;
+
+/** Everything finished in the last `days` days, most recent first. */
+async function recentEntries(days: number): Promise<Entry[]> {
+  const states = await Promise.all(Array.from({ length: days }, (_, i) => readRound(roundIdFor(Date.now() - i * DAY_MS))));
+  return states
+    .flatMap((s) => Object.values(s?.entries ?? {}))
     .filter((e) => e.status === "scored" && e.result)
-    .sort((a, b) => b.result!.score - a.result!.score || a.result!.scoredAt - b.result!.scoredAt);
+    .sort((a, b) => b.result!.scoredAt - a.result!.scoredAt);
 }
 
-/** The entry currently in line for the pool. */
-export function leader(state: RoundState): Entry | undefined {
-  return ranked(state)[0];
+/** Players whose games stand, most recent first. */
+export async function recentPlayers(days = 7): Promise<Entry[]> {
+  return (await recentEntries(days)).filter((e) => e.prizeEligible && !e.cancelled);
+}
+
+/** Every prize won and not yet paid, oldest first. */
+export async function prizesOwed(days = 30): Promise<Entry[]> {
+  return (await recentEntries(days)).filter((e) => e.prize && !e.prize.paid).reverse();
 }
 
 // ---------------------------------------------------------------------------
-// Public view of the competition
+// Public view of the human side
 // ---------------------------------------------------------------------------
 
 const shortWallet = (w?: string) => (w ? `${w.slice(0, 4)}…${w.slice(-4)}` : undefined);
 
-export async function roundSummary(roundId = roundIdFor()) {
+export async function humanSummary() {
   const cfg = config();
-  let state = await readRound(roundId);
-  if (!state && roundId === roundIdFor()) state = await withRound(roundId, (s) => s);
-  if (!state) throw new GameError(404, "no_round", "No such round");
-  const board = ranked(state);
+  const hunting = await huntingAvailable();
+  const plan = gamePlan(hunting);
+  const recent = await recentPlayers();
   return {
-    roundId,
-    endsAt: state.round.endsAt,
-    open: Date.now() < state.round.endsAt,
-    questionCount: QUESTION_PLAN.length,
-    entrants: competitors(state).length,
-    scored: board.length,
-    pool: poolTokens(state),
+    hunting,
+    questionCount: plan.filter((k) => k !== "hunt").length,
+    huntRounds: plan.filter((k) => k === "hunt").length,
+    prizeRound: Math.min(cfg.hunterPrizeRound, HUNT_LEVELS.length),
+    prize: cfg.hunterPrizeTokens,
     entryFee: cfg.entryFeeTokens,
     symbol: cfg.tokenSymbol,
     paymentMode: cfg.paymentMode,
     cluster: cfg.paymentMode === "solana" ? cfg.solana.cluster : undefined,
     sessionMinutes: cfg.sessionMinutes,
-    payout: state.payout,
-    leaderboard: board.slice(0, 100).map((e, i) => ({
-      rank: i + 1,
+    players: recent.length,
+    winners: recent.filter((e) => e.prize).length,
+    board: recent.slice(0, 50).map((e) => ({
       handle: e.handle,
+      cleared: huntScore(e.hunts).cleared,
+      rounds: (e.hunts ?? []).length ? HUNT_LEVELS.length : 0,
       score: e.result!.score,
       quip: e.result!.quip,
+      won: e.prize?.tokens,
       wallet: shortWallet(e.wallet),
     })),
   };
+}
+
+/** Record that a prize has been paid. */
+export async function markPrizePaid(entry: Pick<Entry, "roundId" | "id">, signature?: string): Promise<void> {
+  await updateRound(entry.roundId, (state) => {
+    const prize = state.entries[entry.id]?.prize;
+    if (!prize) throw new GameError(404, "no_prize", "That entry has no prize");
+    prize.paid = true;
+    prize.signature = signature;
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
 
-export interface Session {
+/** A hunt as the player sees it: without which answer is the person's. */
+export interface HuntView {
+  id: string;
+  /** Which rung of the ladder this is, from 1. */
+  round: number;
+  level: number;
+  prompt: string;
+  options: [string, string];
+}
+
+/** What the player is facing now: a question to answer, or a pair to pick from. */
+interface Facing {
+  question?: Question;
+  hunt?: HuntView;
+  index: number;
+  total: number;
+}
+
+export interface Session extends Facing {
+  question: Question;
   token: string;
   roundId: string;
   entryId: string;
   handle: string;
-  training: boolean;
   /** Entered with an agent key, competing for the bounty. */
   agent: boolean;
-  question: Question;
-  index: number;
-  total: number;
   expiresAt: number;
 }
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const randomId = (bytes: number) => randomBytes(bytes).toString("base64url");
-const sameHandle = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const viewOf = ({ id, level, prompt, options }: Hunt, round: number): HuntView => ({ id, round, level, prompt, options });
 
 function cleanHandle(raw: unknown): string {
   const handle = (typeof raw === "string" ? raw : "").trim().replace(/\s+/g, " ");
@@ -185,17 +230,16 @@ function issueToken(entry: Entry): string {
 }
 
 function sessionFor(state: RoundState, entry: Entry, token: string): Session {
-  const questions = questionsOf(state, entry);
   return {
     token,
     roundId: entry.roundId,
     entryId: entry.id,
     handle: entry.handle,
-    training: !entry.prizeEligible && !entry.agentKeyId,
     agent: Boolean(entry.agentKeyId),
-    question: questions[entry.progress],
-    index: entry.progress,
-    total: totalOf(state, entry),
+    // A game always opens with a question.
+    question: questionsOf(state, entry)[entry.answers.length],
+    index: stepOf(entry),
+    total: planOf(state, entry).length,
     expiresAt: entry.createdAt + config().sessionMinutes * 60_000,
   };
 }
@@ -204,31 +248,35 @@ interface NewEntry {
   handle: string;
   wallet?: string;
   payment: EntryPayment;
-  /** Present when the truth about this entry is known up front: who vouches for it, and what it is. */
-  known?: { cohortId: string; label: Kind; agentKeyId?: string };
+  /** Present for agents: the key they came in on. */
+  agent?: AgentKey;
   userAgent?: string;
-  /** The player's opening question, written before the entry is created. */
+  /** The opening question, written before the entry is created, and the shape of the game. */
   first: Question;
+  plan: StepKind[];
 }
 
 function addEntry(state: RoundState, input: NewEntry): Session {
   const now = Date.now();
-  const id = randomId(9);
   const entry: Entry = {
-    id,
+    id: randomId(9),
     roundId: state.round.id,
     handle: input.handle,
     wallet: input.wallet,
     createdAt: now,
     tokenHash: "",
     payment: input.payment,
-    cohortId: input.known?.cohortId,
-    label: input.known?.label,
-    agentKeyId: input.known?.agentKeyId,
+    // An agent is known to be one from the start. A player's label, if any, comes after judging.
+    cohortId: input.agent ? AGENT_COHORT : undefined,
+    label: input.agent ? "agent" : undefined,
+    agentKeyId: input.agent?.id,
+    house: input.agent?.house || undefined,
     questions: [input.first],
     adaptive: true,
-    // Only ordinary competitors are on the public board and in line for the pool.
-    prizeEligible: !input.known,
+    plan: input.plan,
+    hunts: [],
+    // Only players are on the board and in line for the pool.
+    prizeEligible: !input.agent,
     status: "playing",
     progress: 0,
     servedAt: [now],
@@ -241,72 +289,63 @@ function addEntry(state: RoundState, input: NewEntry): Session {
   return sessionFor(state, entry, token);
 }
 
+/** What a new player's game starts with: an opening question, and hunting if there is material for it. */
+async function openGame(): Promise<{ first: Question; plan: StepKind[] }> {
+  const [first, hunting] = await Promise.all([nextQuestion(0, []), huntingAvailable()]);
+  return { first, plan: gamePlan(hunting) };
+}
+
 // ---------------------------------------------------------------------------
-// Entering the daily competition
+// Fees
 // ---------------------------------------------------------------------------
 
-export interface EnterInput {
-  handle: string;
-  wallet?: string;
-  /** Paid path: the round and intent the payment was made for, and its signature. */
+/** What someone sends when they come back after paying. */
+export interface PaymentProof {
   roundId?: string;
   intentId?: string;
   signature?: string;
-  userAgent?: string;
 }
 
-function handleTaken(state: RoundState, handle: string, exceptWallet?: string): boolean {
-  if (competitors(state).some((e) => sameHandle(e.handle, handle))) return true;
-  // A handle is also held while someone else is mid-payment for it.
-  return Object.values(state.intents).some(
-    (i) =>
-      !i.usedByEntry &&
-      i.wallet !== exceptWallet &&
-      sameHandle(i.handle, handle) &&
-      Date.now() - i.createdAt < INTENT_TTL_MS,
-  );
-}
+type Settled =
+  | { kind: "free" }
+  | { kind: "mock" }
+  | { kind: "paid"; roundId: string; intentId: string; signature: string; receivedRaw: string }
+  /** The same payment presented again, e.g. after a lost response: here is the session it already bought. */
+  | { kind: "again"; session: Session };
 
-export async function enter(input: EnterInput): Promise<Session> {
+/**
+ * Make sure a fee has been paid before someone is let in.
+ *
+ * In test mode nothing is collected. With real tokens it takes two calls: the
+ * first reserves a payment and throws a 402 carrying a transaction to sign;
+ * the second arrives with the signature, which is checked on-chain. `guard`
+ * runs under the day's lock before a payment is requested, so nobody is asked
+ * to pay for an entry that would then be refused.
+ */
+async function settleFee(
+  tokens: number,
+  who: { wallet?: string; handle: string },
+  proof: PaymentProof,
+  guard: (state: RoundState) => void,
+): Promise<Settled> {
   const cfg = config();
-  const handle = cleanHandle(input.handle);
-  const wallet = input.wallet?.trim() || undefined;
-  if (wallet && !isValidAddress(wallet)) throw new GameError(400, "bad_wallet", "That isn't a valid Solana address");
+  if (tokens <= 0) return { kind: "free" };
+  if (cfg.paymentMode === "mock") return { kind: "mock" };
+  const wallet = who.wallet;
+  if (!wallet) throw new GameError(400, "wallet_required", "Connect a wallet to pay the fee");
 
-  const base = { handle, wallet, userAgent: input.userAgent };
-  const guard = (state: RoundState, exceptWallet?: string) => {
-    if (Date.now() >= state.round.endsAt + INTENT_TTL_MS) throw new GameError(410, "round_closed", "This round has closed");
-    if (handleTaken(state, handle, exceptWallet)) throw new GameError(409, "handle_taken", "That handle is taken today");
-    if (wallet && competitors(state).some((e) => e.wallet === wallet)) {
-      throw new GameError(409, "wallet_entered", "This wallet has already entered today's round");
-    }
-  };
-
-  // --- Test mode: play tokens, nothing to pay --------------------------------
-  if (cfg.paymentMode === "mock") {
-    const first = await nextQuestion(0, []);
-    return withRound(roundIdFor(), (state) => {
-      guard(state);
-      return addEntry(state, { ...base, first, payment: { mode: "mock", amountTokens: cfg.entryFeeTokens } });
-    });
-  }
-
-  // --- Solana ---------------------------------------------------------------
-  if (!wallet) throw new GameError(400, "wallet_required", "Connect a wallet to pay the entry fee");
-
-  if (!input.signature) {
-    // Step 1: reserve the handle and hand back a transaction to sign.
+  if (!proof.signature) {
     const { solanaSetup, toRawAmount, buildEntryTransaction } = await solana();
     const { decimals } = await solanaSetup();
-    const amountRaw = toRawAmount(cfg.entryFeeTokens, decimals);
+    const amountRaw = toRawAmount(tokens, decimals);
     const roundId = roundIdFor();
     const intent = await withRound(roundId, (state) => {
-      guard(state, wallet);
+      guard(state);
       const id = randomId(9);
       const created: PaymentIntent = {
         id,
         wallet,
-        handle,
+        handle: who.handle,
         memo: `pmh:${roundId}:${id}`,
         amountRaw: amountRaw.toString(),
         createdAt: Date.now(),
@@ -315,13 +354,13 @@ export async function enter(input: EnterInput): Promise<Session> {
       return created;
     });
     const transaction = await buildEntryTransaction(wallet, intent.memo, amountRaw);
-    throw new GameError(402, "payment_required", "Pay the entry fee to play", {
+    throw new GameError(402, "payment_required", "Pay the fee to play", {
       payment: {
         roundId,
         intentId: intent.id,
         transaction,
         memo: intent.memo,
-        amount: cfg.entryFeeTokens,
+        amount: tokens,
         symbol: cfg.tokenSymbol,
         cluster: cfg.solana.cluster,
         mint: cfg.solana.mint,
@@ -330,32 +369,24 @@ export async function enter(input: EnterInput): Promise<Session> {
     });
   }
 
-  // Step 2: the player says they paid. Check the chain before believing it.
-  const roundId = input.roundId ?? roundIdFor();
-  const signature = input.signature.trim();
+  // They say they paid. Check the chain before believing it.
+  const roundId = proof.roundId ?? roundIdFor();
+  const signature = proof.signature.trim();
   const before = await readRound(roundId);
-  const intent = input.intentId ? before?.intents[input.intentId] : undefined;
+  const intent = proof.intentId ? before?.intents[proof.intentId] : undefined;
   if (!before || !intent || intent.wallet !== wallet) {
-    throw new GameError(400, "bad_intent", "That payment request isn't known. Start the entry again.");
+    throw new GameError(400, "bad_intent", "That payment request isn't known. Start again.");
   }
-
-  const reissue = (state: RoundState): Session | null => {
-    // The same payment presented again (e.g. the first response was lost):
-    // hand back a fresh token as long as play hasn't started.
-    const existing = state.entries[state.signatures[signature] ?? ""];
-    if (!existing) return null;
-    if (existing.wallet !== wallet || existing.payment.intentId !== intent.id || existing.progress > 0 || existing.status !== "playing") {
-      throw new GameError(409, "payment_used", "That payment has already been used for an entry");
+  const bought = before.entries[before.signatures[signature] ?? ""];
+  if (bought) {
+    // Hand back a fresh token for the entry this payment already bought, as long as play hasn't started.
+    if (bought.payment.intentId !== intent.id || stepOf(bought) > 0 || bought.status !== "playing") {
+      throw new GameError(409, "payment_used", "That payment has already been used");
     }
-    return sessionFor(state, existing, issueToken(existing));
-  };
-
-  if (before.signatures[signature]) {
-    return withRound(roundId, (state) => {
-      const again = reissue(state);
-      if (!again) throw new GameError(409, "payment_used", "That payment has already been used for an entry");
-      return again;
-    });
+    return {
+      kind: "again",
+      session: await withRound(roundId, (state) => sessionFor(state, state.entries[bought.id], issueToken(state.entries[bought.id]))),
+    };
   }
   if (intent.usedByEntry) throw new GameError(409, "intent_used", "That payment request was already completed");
 
@@ -367,112 +398,92 @@ export async function enter(input: EnterInput): Promise<Session> {
     notBefore: Math.floor(intent.createdAt / 1000) - 120,
   });
   if (!check.ok) throw new GameError(402, "payment_unverified", check.reason);
+  return { kind: "paid", roundId, intentId: intent.id, signature, receivedRaw: check.receivedRaw.toString() };
+}
 
-  const first = await nextQuestion(0, []);
-  return withRound(roundId, (state) => {
-    const again = reissue(state);
-    if (again) return again;
-    const live = state.intents[intent.id];
-    if (!live || live.usedByEntry) throw new GameError(409, "intent_used", "That payment request was already completed");
-    const session = addEntry(state, {
-      ...base,
-      first,
-      handle: live.handle,
-      payment: {
-        mode: "solana",
-        amountTokens: cfg.entryFeeTokens,
-        amountRaw: check.receivedRaw.toString(),
-        signature,
-        intentId: live.id,
-      },
-    });
-    live.usedByEntry = session.entryId;
-    state.signatures[signature] = session.entryId;
-    return session;
+/** Create the entry a settled fee pays for, and mark the payment as spent in the same step. */
+function admit(settled: Exclude<Settled, { kind: "again" }>, tokens: number, entry: Omit<NewEntry, "payment">): Promise<Session> {
+  const payment: EntryPayment =
+    settled.kind === "paid"
+      ? { mode: "solana", amountTokens: tokens, amountRaw: settled.receivedRaw, signature: settled.signature, intentId: settled.intentId }
+      : settled.kind === "mock"
+        ? { mode: "mock", amountTokens: tokens }
+        : { mode: "waived", amountTokens: 0 };
+  return withRound(settled.kind === "paid" ? settled.roundId : roundIdFor(), (state) => {
+    if (settled.kind === "paid") {
+      const intent = state.intents[settled.intentId];
+      if (!intent || intent.usedByEntry || state.signatures[settled.signature]) {
+        throw new GameError(409, "payment_used", "That payment has already been used");
+      }
+      const session = addEntry(state, { ...entry, payment });
+      intent.usedByEntry = session.entryId;
+      state.signatures[settled.signature] = session.entryId;
+      return session;
+    }
+    return addEntry(state, { ...entry, payment });
   });
 }
 
 // ---------------------------------------------------------------------------
-// Starting a training session
+// Entering on the human side
 // ---------------------------------------------------------------------------
 
-/**
- * Start a free, labelled session in the training room. The caller has already
- * proved membership of `cohort`. Names can repeat: trainers play many times.
- */
-export async function enterTraining(input: {
-  cohort: Cohort;
-  handle: unknown;
-  declaredKind?: unknown;
+export interface EnterInput extends PaymentProof {
+  handle: string;
+  /** Where a prize would be sent. Needed to pay a fee; optional otherwise. */
+  wallet?: string;
   userAgent?: string;
-}): Promise<Session> {
+}
+
+export async function enter(input: EnterInput): Promise<Session> {
+  const cfg = config();
   const handle = cleanHandle(input.handle);
-  let label: Kind;
-  if (input.cohort.label === "ask") {
-    if (input.declaredKind !== "human" && input.declaredKind !== "agent") {
-      throw new GameError(400, "declare_kind", "Say whether this session is a human or an AI agent");
-    }
-    label = input.declaredKind;
-  } else {
-    label = input.cohort.label;
-  }
-  const first = await nextQuestion(0, []);
-  return withRound(roundIdFor(), (state) =>
-    addEntry(state, {
-      handle,
-      first,
-      payment: { mode: "waived", amountTokens: 0 },
-      known: { cohortId: input.cohort.id, label },
-      userAgent: input.userAgent,
-    }),
-  );
+  const wallet = input.wallet?.trim() || undefined;
+  if (wallet && !isValidAddress(wallet)) throw new GameError(400, "bad_wallet", "That isn't a valid Solana address");
+
+  const settled = await settleFee(cfg.entryFeeTokens, { wallet, handle }, input, () => undefined);
+  if (settled.kind === "again") return settled.session;
+  const opening = await openGame();
+  return admit(settled, cfg.entryFeeTokens, { handle, wallet, userAgent: input.userAgent, ...opening });
 }
 
 // ---------------------------------------------------------------------------
-// The agent bounty
+// Entering on the bot side
 // ---------------------------------------------------------------------------
 
-/** Cohort name under which bounty agents are filed as training data. */
-export const AGENT_COHORT = "agents";
-/** An agent has fooled the judge when it scores at least this. */
-export const FOOLED_AT = 50;
-
-/** Scored bounty entries for a round, best first. */
-export function agentBoard(state: RoundState): Entry[] {
-  return Object.values(state.entries)
-    .filter((e) => e.agentKeyId && e.status === "scored" && e.result)
-    .sort((a, b) => b.result!.score - a.result!.score || a.result!.scoredAt - b.result!.scoredAt);
-}
-
-/** The agent currently in line for the bounty: the best one the judge took for human. */
-export function bountyLeader(state: RoundState): Entry | undefined {
-  const top = agentBoard(state)[0];
-  return top && top.result!.score >= FOOLED_AT ? top : undefined;
+/** Agents that have finished, most recent first, from the last `days` days. */
+export async function recentAgents(days = 7): Promise<Entry[]> {
+  return (await recentEntries(days)).filter((e) => e.agentKeyId);
 }
 
 /**
- * Enter an agent for the bounty. The caller has already checked the key. The
- * judge scores it exactly like anyone else, without being told it is an agent.
+ * Enter an agent. The caller has already checked the key. The agent pays the
+ * fee from its builder's wallet. The judge scores it exactly like anyone else,
+ * without being told it is an agent.
+ * Agents answer questions only; hunting is for people.
  */
-export async function enterAgent(input: { key: AgentKey; handle: unknown; userAgent?: string }): Promise<Session> {
+export async function enterAgent(input: { key: AgentKey; handle: unknown; userAgent?: string } & PaymentProof): Promise<Session> {
   const cfg = config();
-  const handle = cleanHandle(input.handle ?? input.key.name);
+  const { key } = input;
+  const handle = cleanHandle(input.handle ?? key.name);
+  // The house's own agents test the judge; they neither pay nor win.
+  const fee = key.house ? 0 : cfg.agentFeeTokens;
+  const guard = (state: RoundState) => {
+    if (Object.values(state.entries).filter((e) => e.agentKeyId).length >= cfg.agentDailyCap) {
+      throw new GameError(429, "agents_full", "No more agent runs can be taken today");
+    }
+  };
+
+  const settled = await settleFee(fee, { wallet: key.wallet, handle }, input, guard);
+  if (settled.kind === "again") return settled.session;
   const first = await nextQuestion(0, []);
-  return withRound(roundIdFor(), (state) => {
-    const today = Object.values(state.entries).filter((e) => e.agentKeyId);
-    if (today.filter((e) => e.agentKeyId === input.key.id).length >= cfg.agentEntriesPerKey) {
-      throw new GameError(429, "key_limit", `This key has used its ${cfg.agentEntriesPerKey} entries for today`);
-    }
-    if (today.length >= cfg.agentDailyCap) {
-      throw new GameError(429, "bounty_full", "The bounty has taken all the agent entries it can today");
-    }
-    return addEntry(state, {
-      handle,
-      first,
-      payment: { mode: "waived", amountTokens: 0 },
-      known: { cohortId: AGENT_COHORT, label: "agent", agentKeyId: input.key.id },
-      userAgent: input.userAgent,
-    });
+  return admit(settled, fee, {
+    handle,
+    wallet: key.wallet,
+    first,
+    plan: gamePlan(false),
+    agent: key,
+    userAgent: input.userAgent,
   });
 }
 
@@ -496,50 +507,66 @@ function authorise(state: RoundState | null, entryId: string, secret: string): E
   return entry;
 }
 
+/** Checks common to every move: the session is real, still being played, and in time. */
+function playing(state: RoundState, entryId: string, secret: string, now: number): Entry {
+  const entry = authorise(state, entryId, secret);
+  if (entry.status !== "playing") throw new GameError(409, "already_finished", "This entry is already finished");
+  if (now > entry.createdAt + config().sessionMinutes * 60_000) {
+    throw new GameError(410, "session_expired", "Time ran out on this entry");
+  }
+  return entry;
+}
+
+const unknownRound = (err: unknown): never => {
+  if (err instanceof GameError) throw err;
+  if (/does not exist|Invalid round/.test(String(err))) throw new GameError(401, "bad_token", "Invalid session");
+  throw err;
+};
+
 export interface PlayerResult {
+  /** How human the judge found them, 0-100. */
   score: number;
   verdict: Kind;
   quip: string;
-  roundId: string;
   handle: string;
-  /** Competition entries: place on today's board. */
-  rank?: number;
-  scored?: number;
-  /** Training sessions: what the player really was, shown to them once the judge has committed. */
-  training?: { truth: Kind; judgeCorrect: boolean };
-  /** Bounty agents: whether the judge took it for human, and its place among today's agents. */
-  impostor?: { fooled: boolean; rank: number; of: number };
+  /** Players: how far up the hunting ladder they got, and the round that wins the prize. */
+  hunt?: { cleared: number; rounds: number; prizeRound: number };
+  /** Players: the judge took them for a bot, so the game doesn't count. */
+  cancelled?: boolean;
+  /** Agents: whether the judge took it for human. */
+  impostor?: { fooled: boolean };
+  /** What they won, if anything, and whether there is somewhere to send it. */
+  prize?: { tokens: number; symbol: string; payable: boolean };
 }
 
-function playerResult(state: RoundState, entry: Entry): PlayerResult {
+function playerResult(entry: Entry): PlayerResult {
+  const cfg = config();
   const result = entry.result!;
-  const base = { score: result.score, verdict: result.verdict, quip: result.quip, roundId: entry.roundId, handle: entry.handle };
-  if (entry.agentKeyId) {
-    const board = agentBoard(state);
-    return {
-      ...base,
-      impostor: { fooled: result.score >= FOOLED_AT, rank: board.findIndex((e) => e.id === entry.id) + 1, of: board.length },
-    };
-  }
-  // Only training sessions get the reveal. A competitor someone labelled later still just sees their rank.
-  if (!entry.prizeEligible && entry.label) {
-    return { ...base, training: { truth: entry.label, judgeCorrect: result.verdict === entry.label } };
-  }
-  const board = ranked(state);
-  return { ...base, rank: board.findIndex((e) => e.id === entry.id) + 1, scored: board.length };
+  const prize = entry.prize ? { tokens: entry.prize.tokens, symbol: cfg.tokenSymbol, payable: Boolean(entry.wallet) } : undefined;
+  const base = { score: result.score, verdict: result.verdict, quip: result.quip, handle: entry.handle, prize };
+  if (entry.agentKeyId) return { ...base, impostor: { fooled: result.score >= HUMAN_AT } };
+  const hunted = (entry.hunts ?? []).length > 0 || (entry.plan ?? []).includes("hunt");
+  const hunt = hunted
+    ? { cleared: huntScore(entry.hunts).cleared, rounds: HUNT_LEVELS.length, prizeRound: Math.min(cfg.hunterPrizeRound, HUNT_LEVELS.length) }
+    : undefined;
+  return { ...base, hunt, cancelled: entry.cancelled || undefined };
 }
 
-/** Judge a finished entry, record the result, and file it as training data if its truth is known. */
+/**
+ * Judge a finished entry and record the result. Then, and only then, attach
+ * what is known about who it was and file it as a training example.
+ */
 async function score(roundId: string, entryId: string): Promise<PlayerResult> {
   const state = await readRound(roundId);
   const entry = state?.entries[entryId];
   if (!state || !entry) throw new GameError(404, "no_entry", "Entry not found");
 
   // The judge gets the questions, the answers and the behaviour readings.
-  // It is not given the label, the cohort, the handle or the wallet.
+  // It is not given the side the entry came in on, the handle or the wallet.
   const features = aggregateFeatures(entry.answers, entry.env, entry.userAgent);
   const result: JudgeResult = await judgeEntry(questionsOf(state, entry), { id: entry.id, answers: entry.answers }, features);
 
+  const cfg = config();
   const { finalState, scoredNow } = await withRound(roundId, (s) => {
     const e = s.entries[entryId];
     // Two requests can race to score the same entry; the first result stands.
@@ -548,25 +575,42 @@ async function score(roundId: string, entryId: string): Promise<PlayerResult> {
       e.features = features;
       e.result = result;
       e.status = "scored";
+      if (e.prizeEligible) {
+        // A player the judge takes for a bot loses their game.
+        if (result.score < HUMAN_AT) e.cancelled = true;
+        else {
+          // A player it is confident about is taken to be human from here on.
+          if (result.score >= CONFIDENT_HUMAN_AT) {
+            e.label = "human";
+            e.cohortId = PLAYER_COHORT;
+          }
+          if (huntScore(e.hunts).cleared >= Math.min(cfg.hunterPrizeRound, HUNT_LEVELS.length)) {
+            e.prize = { tokens: cfg.hunterPrizeTokens, reason: "hunter", wonAt: Date.now() };
+          }
+        }
+      } else if (e.agentKeyId && !e.house && result.score >= HUMAN_AT) {
+        // An agent the judge took for human wins the agents' prize. The house's own agents don't.
+        e.prize = { tokens: cfg.agentPrizeTokens, reason: "fooled", wonAt: Date.now() };
+      }
     }
     return { finalState: s, scoredNow: first };
   });
   const scored = finalState.entries[entryId];
 
-  // The reveal: only now that the verdict is locked in does the truth meet it.
   if (scoredNow && scored.label && scored.cohortId) {
-    await recordExample(finalState, scored, scored.label, scored.cohortId, "session");
+    await recordExample(finalState, scored, scored.label, scored.cohortId, scored.agentKeyId ? "session" : "auto");
+    clearHuntCache();
   }
-  return playerResult(finalState, scored);
+  return playerResult(scored);
 }
 
-/** File a scored entry, with its now-known truth, as a training example. */
+/** File a scored entry, with what is known about who it was, as a training example. */
 async function recordExample(
   state: RoundState,
   entry: Entry,
   label: Kind,
   cohortId: string,
-  source: "session" | "board",
+  source: "session" | "auto",
 ): Promise<void> {
   await appendTraining({
     entryId: entry.id,
@@ -593,54 +637,16 @@ async function recordExample(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Labelling the public board after the fact
-// ---------------------------------------------------------------------------
-
-/**
- * Scored competition entries from the last few rounds, for a trainer who knows
- * who some of the players really are.
- */
-export async function boardForLabelling(days = 3) {
-  const rows: { roundId: string; entryId: string; handle: string; score: number; verdict: Kind; label?: Kind }[] = [];
-  for (let i = 0; i < days; i++) {
-    const state = await readRound(roundIdFor(Date.now() - i * DAY_MS));
-    if (!state) continue;
-    for (const e of ranked(state)) {
-      rows.push({ roundId: e.roundId, entryId: e.id, handle: e.handle, score: e.result!.score, verdict: e.result!.verdict, label: e.label });
-    }
-  }
-  return rows;
+/** How the last hunt went, shown to the player before they move on. */
+export interface HuntReveal {
+  correct: boolean;
+  humanIndex: 0 | 1;
+  level: number;
 }
 
-/**
- * Record what a competition player really was. The judge had already scored
- * them blind, so this adds a training example without touching their score,
- * their rank or the pool. Labelling again with a different answer corrects it.
- */
-export async function labelCompetitor(input: { roundId: unknown; entryId: unknown; label: unknown; cohort: Cohort }) {
-  const { roundId, entryId, label, cohort } = input;
-  if (label !== "human" && label !== "agent") throw new GameError(400, "bad_label", "Label must be human or agent");
-  if (typeof roundId !== "string" || typeof entryId !== "string" || !(await readRound(roundId))) {
-    throw new GameError(404, "no_entry", "That entry doesn't exist");
-  }
-  const { state, entry, changed } = await updateRound(roundId, (s) => {
-    const e = s.entries[entryId];
-    if (!e || !e.prizeEligible) throw new GameError(404, "no_entry", "That entry isn't on the public board");
-    if (e.status !== "scored") throw new GameError(409, "not_scored", "That player hasn't been judged yet");
-    const isChange = e.label !== label;
-    e.label = label;
-    e.labelledBy = cohort.id;
-    return { state: s, entry: e, changed: isChange };
-  });
-  if (changed) await recordExample(state, entry, label, cohort.id, "board");
-  return { handle: entry.handle, label, judgeCorrect: entry.result!.verdict === label };
-}
+export type AnswerOutcome = (({ done: false } & Facing) | { done: true; result: PlayerResult }) & { lastHunt?: HuntReveal };
 
-export type AnswerOutcome =
-  | { done: false; question: Question; index: number; total: number }
-  | { done: true; result: PlayerResult };
-
+/** Answer the question the player is on. */
 export async function answer(input: {
   token: unknown;
   questionId: unknown;
@@ -653,20 +659,12 @@ export async function answer(input: {
   const now = Date.now();
 
   const step = await updateRound(roundId, (state) => {
-    const entry = authorise(state, entryId, secret);
-    if (entry.status !== "playing") throw new GameError(409, "already_finished", "This entry is already finished");
-    if (now > entry.createdAt + config().sessionMinutes * 60_000) {
-      throw new GameError(410, "session_expired", "Time ran out on this entry");
-    }
-    const questions = questionsOf(state, entry);
-    const question = questions[entry.progress];
-    const total = totalOf(state, entry);
+    const entry = playing(state, entryId, secret, now);
+    const plan = planOf(state, entry);
+    const asked = entry.answers.length;
+    const question = plan[stepOf(entry)] === "hunt" ? undefined : questionsOf(state, entry)[asked];
     if (!question || input.questionId !== question.id) {
-      throw new GameError(409, "wrong_question", "That isn't the current question", {
-        question,
-        index: entry.progress,
-        total,
-      });
+      throw new GameError(409, "wrong_question", "That isn't the current question");
     }
     if (question.kind === "text") {
       if (!text) throw new GameError(400, "empty_answer", "Say something");
@@ -682,69 +680,130 @@ export async function answer(input: {
       questionId: question.id,
       text: answerText,
       answeredAt: now,
-      serverLatencyMs: now - entry.servedAt[entry.progress],
+      serverLatencyMs: now - entry.servedAt[asked],
       features: extractAnswerFeatures(question.kind, answerText, telemetry),
     });
     if (telemetry.env) {
       entry.env = telemetry.env;
       entry.device = deviceOf(telemetry.env);
     }
-    entry.progress++;
+    entry.progress = entry.answers.length;
+    // Older entries already hold their whole list; start the next question's clock now.
+    if (questionsOf(state, entry)[entry.answers.length]) entry.servedAt[entry.answers.length] = Date.now();
 
-    if (entry.progress < total) {
-      // Older entries already hold their whole list; start that question's clock now.
-      if (questions[entry.progress]) entry.servedAt[entry.progress] = Date.now();
-      return { done: false as const, questionId: question.id };
-    }
-    entry.status = "scoring";
-    return { done: true as const, questionId: question.id };
-  }).catch((err) => {
-    if (err instanceof GameError) throw err;
-    if (/does not exist|Invalid round/.test(String(err))) throw new GameError(401, "bad_token", "Invalid session");
-    throw err;
-  });
+    const finished = stepOf(entry) >= plan.length;
+    if (finished) entry.status = "scoring";
+    return { finished, questionId: question.id };
+  }).catch(unknownRound);
 
   await saveTelemetry(roundId, entryId, step.questionId, telemetry);
-  if (!step.done) return serveQuestion(roundId, entryId);
-  return { done: true, result: await score(roundId, entryId) };
+  if (step.finished) return { done: true, result: await score(roundId, entryId) };
+  return serveStep(roundId, entryId);
+}
+
+/** Pick which of a hunt's two answers the person wrote. */
+export async function pickHunt(input: { token: unknown; huntId: unknown; pick: unknown }): Promise<AnswerOutcome> {
+  const { roundId, entryId, secret } = parseToken(input.token);
+  if (input.pick !== 0 && input.pick !== 1) throw new GameError(400, "bad_pick", "Pick one of the two answers");
+  const pick = input.pick;
+  const now = Date.now();
+
+  const step = await updateRound(roundId, (state) => {
+    const entry = playing(state, entryId, secret, now);
+    const hunt = (entry.hunts ?? []).find((h) => h.pick === undefined);
+    if (!hunt || hunt.id !== input.huntId) throw new GameError(409, "wrong_hunt", "That isn't the current round");
+    hunt.pick = pick;
+    hunt.correct = pick === hunt.humanIndex;
+    hunt.answeredAt = now;
+    // A miss ends the climb: the rest of the game is the remaining questions.
+    if (!hunt.correct) entry.plan = planOf(state, entry).filter((kind, i) => i < stepOf(entry) || kind !== "hunt");
+    const finished = stepOf(entry) >= planOf(state, entry).length;
+    if (finished) entry.status = "scoring";
+    return { finished, hunt: { ...hunt } };
+  }).catch(unknownRound);
+
+  // Every pick is a person's judgement on a pair whose truth is known: keep it.
+  const { hunt } = step;
+  await appendHuntRecord({
+    at: now,
+    roundId,
+    hunterEntryId: entryId,
+    sourceEntryId: hunt.sourceEntryId,
+    level: hunt.level,
+    prompt: hunt.prompt,
+    human: hunt.options[hunt.humanIndex],
+    decoy: hunt.options[hunt.humanIndex === 0 ? 1 : 0],
+    correct: hunt.correct!,
+    ms: now - hunt.servedAt,
+  });
+
+  const lastHunt: HuntReveal = { correct: hunt.correct!, humanIndex: hunt.humanIndex, level: hunt.level };
+  const next: AnswerOutcome = step.finished
+    ? { done: true, result: await score(roundId, entryId) }
+    : await serveStep(roundId, entryId);
+  return { ...next, lastHunt };
 }
 
 /**
- * The question the player is on, writing it first if it doesn't exist yet.
- * Questions are written outside the round's lock (the model takes a few
- * seconds) and the player's clock starts only once the question is stored.
+ * What the player is facing now, preparing it first if it doesn't exist yet.
+ * Questions and decoys are written outside the round's lock (the model takes a
+ * few seconds), and a step's clock starts only once it is stored.
  */
-async function serveQuestion(roundId: string, entryId: string): Promise<AnswerOutcome> {
-  const state = await readRound(roundId);
-  const entry = state?.entries[entryId];
-  if (!state || !entry) throw new GameError(404, "no_entry", "Entry not found");
-  const total = totalOf(state, entry);
-  const existing = questionsOf(state, entry)[entry.progress];
-  if (existing) return { done: false, question: existing, index: entry.progress, total };
+async function serveStep(roundId: string, entryId: string): Promise<AnswerOutcome> {
+  for (;;) {
+    const state = await readRound(roundId);
+    const entry = state?.entries[entryId];
+    if (!state || !entry) throw new GameError(404, "no_entry", "Entry not found");
+    if (entry.status !== "playing") return { done: true, result: await score(roundId, entryId) };
+    const plan = planOf(state, entry);
+    const index = stepOf(entry);
+    const facing = { index, total: plan.length };
 
-  const asked = questionsOf(state, entry);
-  const written = await nextQuestion(
-    entry.progress,
-    entry.answers.map((a, i) => ({ question: asked[i], answer: a.text })),
-  );
-  return updateRound(roundId, (s) => {
-    const e = s.entries[entryId];
-    e.questions ??= [];
-    // If two requests raced to write this question, the first one stored is the question.
-    if (!e.questions[e.progress]) {
-      e.questions[e.progress] = written;
-      e.servedAt[e.progress] = Date.now();
+    if (plan[index] === "hunt") {
+      const waiting = (entry.hunts ?? []).find((h) => h.pick === undefined);
+      if (waiting) return { done: false, hunt: viewOf(waiting, (entry.hunts ?? []).indexOf(waiting) + 1), ...facing };
+      const hunt = await nextHunt(entry).catch((err) => {
+        console.error("[hunt] could not prepare a round; skipping the rest of this player's hunts:", err);
+        return null;
+      });
+      await updateRound(roundId, (s) => {
+        const e = s.entries[entryId];
+        if ((e.hunts ?? []).some((h) => h.pick === undefined)) return; // another request got there first
+        if (hunt) {
+          (e.hunts ??= []).push({ ...hunt, servedAt: Date.now() });
+        } else {
+          // Nothing left to show this player: carry on with the questions alone.
+          e.plan = planOf(s, e).filter((kind, i) => i < stepOf(e) || kind !== "hunt");
+          if (stepOf(e) >= e.plan.length) e.status = "scoring";
+        }
+      });
+      continue;
     }
-    return { done: false as const, question: e.questions[e.progress], index: e.progress, total };
-  });
+
+    const asked = questionsOf(state, entry);
+    const number = entry.answers.length;
+    if (asked[number]) return { done: false, question: asked[number], ...facing };
+    const written = await nextQuestion(
+      number,
+      entry.answers.map((a, i) => ({ question: asked[i], answer: a.text })),
+    );
+    await updateRound(roundId, (s) => {
+      const e = s.entries[entryId];
+      e.questions ??= [];
+      // If two requests raced to write this question, the first one stored is the question.
+      if (!e.questions[number]) {
+        e.questions[number] = written;
+        e.servedAt[number] = Date.now();
+      }
+    });
+  }
 }
 
-/** Where a session stands: the current question, or the result. Also finishes scoring that was interrupted. */
+/** Where a session stands: the current step, or the result. Also finishes anything that was interrupted. */
 export async function sessionStatus(token: unknown): Promise<AnswerOutcome> {
   const { roundId, entryId, secret } = parseToken(token);
   const state = await readRound(roundId);
   const entry = authorise(state, entryId, secret);
-  if (entry.status === "scored") return { done: true, result: playerResult(state!, entry) };
-  if (entry.status === "scoring") return { done: true, result: await score(roundId, entryId) };
-  return serveQuestion(roundId, entryId);
+  if (entry.status === "scored") return { done: true, result: playerResult(entry) };
+  return serveStep(roundId, entryId);
 }

@@ -10,7 +10,7 @@ import { answerText } from "./text";
  *
  * Needs Playwright: npm i -D playwright && npx playwright install chromium
  */
-export async function runBrowserBot(url: string, password: string, opts: { llm: boolean; keyDelayMs?: number }): Promise<BotResult> {
+export async function runBrowserBot(url: string, agentKey: string, opts: { llm: boolean; keyDelayMs?: number }): Promise<BotResult> {
   // Playwright is optional, so it is resolved at run time and left untyped.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let chromium: any;
@@ -23,14 +23,11 @@ export async function runBrowserBot(url: string, password: string, opts: { llm: 
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    // Through the training room's front door, like a trainer would.
-    await page.goto(new URL("/train", url).href);
-    await page.getByLabel("Password").fill(password);
-    await page.getByRole("button", { name: "Unlock" }).click();
-    await page.getByLabel("Your name").fill(handle);
-    const declare = page.getByLabel("An AI agent");
-    if (await declare.count()) await declare.check();
-    await page.getByRole("button", { name: "Start a session" }).click();
+    // In through the agents' page, like a builder's browser-driving agent would.
+    await page.goto(new URL("/agents", url).href);
+    await page.getByLabel("Agent key").fill(agentKey);
+    await page.getByLabel("Name for this run").fill(handle);
+    await page.getByRole("button", { name: "Start a run in this browser" }).click();
     await page.waitForURL("**/play");
 
     for (;;) {

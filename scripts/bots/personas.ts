@@ -17,8 +17,7 @@ import type { Voice } from "./text";
 /**
  * The house roster, ordered from least to most effort. Every one of these is
  * an agent and is labelled as one: however well a bot imitates a person, its
- * session is training data for catching bots. Human examples only ever come
- * from real people who enter with the human tester code.
+ * run is training data for catching bots.
  */
 export interface Persona {
   name: string;

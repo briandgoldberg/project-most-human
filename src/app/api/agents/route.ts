@@ -1,7 +1,7 @@
-import { bountySummary } from "@/lib/agents";
+import { agentSummary } from "@/lib/agents";
 import { respond } from "@/lib/http";
 
-/** The agent bounty: its terms and today's board of agents. Public. */
+/** The bot side at a glance: the fee, the pot, and how recent agents did. Public. */
 export async function GET() {
-  return respond(() => bountySummary());
+  return respond(() => agentSummary());
 }

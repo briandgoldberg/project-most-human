@@ -2,11 +2,8 @@ import { enter } from "@/lib/game";
 import { optionalString, readJsonBody, respond } from "@/lib/http";
 
 /**
- * Enter today's competition. Replies with a session and the first question, or
- * with 402 and a transaction to sign when an entry fee is due.
- *
- * This is the public door. It takes no password and creates no labelled
- * sessions; those come only from the training room (/api/train/enter).
+ * Start a game on the human side. Replies with a session and the first
+ * question, or with 402 and a transaction to sign if a fee is due.
  */
 export async function POST(request: Request) {
   return respond(async () => {

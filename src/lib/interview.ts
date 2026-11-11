@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "./config";
 import { llmWriteNextQuestion } from "./judge/llm";
 import { randomDrawQuestion, randomTextQuestion } from "./questions";
-import type { Question } from "./types";
+import type { Question, StepKind } from "./types";
 
 /**
  * What one player gets asked. No two players get the same questions, and
@@ -19,6 +19,17 @@ import type { Question } from "./types";
  * by the model when it is available and from the built-in bank otherwise.
  */
 export const QUESTION_PLAN = ["fresh", "followup", "fresh", "followup", "draw"] as const;
+
+/**
+ * A whole game, in order. With hunting on, a player proves they are human and
+ * hunts bots in alternating blocks: two questions, three hunts, two questions,
+ * three hunts, then the drawing. Follow-ups stay next to the answer they follow.
+ */
+export function gamePlan(hunting: boolean): StepKind[] {
+  return hunting
+    ? ["fresh", "followup", "hunt", "hunt", "hunt", "fresh", "followup", "hunt", "hunt", "hunt", "draw"]
+    : [...QUESTION_PLAN];
+}
 
 /**
  * Left to itself the model keeps coming back to the same handful of subjects,

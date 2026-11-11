@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { ApiError, api, loadSession, type PlayerResult, type Progress } from "@/lib/client";
+import { ApiError, api, loadSession, type HuntReveal, type HuntView, type PlayerResult, type Progress } from "@/lib/client";
 import { Collector } from "@/lib/telemetry/collector";
 import type { AnswerTelemetry, Question, StrokePoint } from "@/lib/types";
 import { Shell } from "./Shell";
@@ -16,11 +16,19 @@ interface Submission {
   telemetry: AnswerTelemetry;
 }
 
+interface At {
+  index: number;
+  total: number;
+}
+
 type View =
   | { phase: "loading" }
   | { phase: "no-session" }
-  | { phase: "question"; question: Question; index: number; total: number }
-  | { phase: "sending"; question: Question; index: number; total: number; pending: Submission; error?: string }
+  | ({ phase: "question"; question: Question } & At)
+  | ({ phase: "sending"; question: Question; pending: Submission; error?: string } & At)
+  | ({ phase: "hunt"; hunt: HuntView; picking?: 0 | 1; error?: string } & At)
+  /** A hunt just decided: show which answer was the person's before moving on to `next`. */
+  | ({ phase: "reveal"; hunt: HuntView; pick: 0 | 1; reveal: HuntReveal; next: Progress } & At)
   | { phase: "result"; result: PlayerResult };
 
 const button = "bg-pulse px-5 py-2.5 text-ink transition-opacity disabled:opacity-40";
@@ -181,39 +189,106 @@ function DrawQuestion({ question, onSubmit }: { question: Question; onSubmit: (s
 }
 
 // ---------------------------------------------------------------------------
+// Bot Hunter
+// ---------------------------------------------------------------------------
+
+/** Two answers to one question. One was typed by a person; the player picks which. */
+function HuntRound({
+  hunt,
+  picking,
+  reveal,
+  pick,
+  onPick,
+}: {
+  hunt: HuntView;
+  picking?: 0 | 1;
+  reveal?: HuntReveal;
+  pick?: 0 | 1;
+  onPick?: (choice: 0 | 1) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-4 text-sm text-dim">
+        {reveal
+          ? reveal.correct
+            ? "Right. That one was the person."
+            : "Wrong. The machine fooled you, and your climb ends here."
+          : "One of these was typed by a person, the other written by a machine. Pick the person."}
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {([0, 1] as const).map((i) => {
+          const isPerson = reveal?.humanIndex === i;
+          const chosen = (reveal ? pick : picking) === i;
+          const edge = reveal ? (isPerson ? "border-pulse" : "border-line opacity-60") : chosen ? "border-pulse" : "border-line hover:border-paper";
+          return (
+            <button
+              key={i}
+              type="button"
+              disabled={!onPick || picking !== undefined}
+              onClick={() => onPick?.(i)}
+              aria-label={`Answer ${i === 0 ? "A" : "B"}`}
+              className={`flex min-h-36 flex-col border bg-panel p-4 text-left transition-colors disabled:cursor-default ${edge}`}
+            >
+              <span className="mb-2 text-[11px] tracking-widest text-dim uppercase">
+                {i === 0 ? "A" : "B"}
+                {reveal && (isPerson ? " · a person" : " · the machine")}
+                {reveal && chosen && " · your pick"}
+              </span>
+              <span className="break-words whitespace-pre-wrap">{hunt.options[i]}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 
 function Result({ result }: { result: PlayerResult }) {
+  const { hunt, prize, impostor, cancelled } = result;
   return (
     <section className="py-12 text-center sm:py-16">
       <div className="text-[11px] tracking-widest text-dim uppercase">The judge&rsquo;s read on {result.handle}</div>
       <div className="mt-4 font-display text-8xl leading-none tabular-nums sm:text-9xl">{result.score.toFixed(1)}</div>
       <div className="mt-2 text-xs text-dim">out of 100 human</div>
       <p className="mx-auto mt-8 max-w-md font-display text-2xl">&ldquo;{result.quip}&rdquo;</p>
-      <p className="mt-8 text-sm text-dim">
-        Verdict: <span className="text-paper">{result.verdict === "human" ? "probably a person" : "probably a machine"}</span>
-        {result.rank ? ` · Ranked ${result.rank} of ${result.scored} so far today` : null}
-      </p>
-      {result.training && (
-        <p className="mx-auto mt-4 max-w-md border border-line p-3 text-sm">
-          This session was recorded as {result.training.truth === "human" ? "a human" : "an AI agent"}.{" "}
-          <span className={result.training.judgeCorrect ? "text-paper" : "text-pulse"}>
-            {result.training.judgeCorrect ? "The judge got it right." : "The judge got it wrong."}
-          </span>{" "}
-          Either way, it&rsquo;s now training data.
-        </p>
-      )}
-      {result.impostor && (
-        <p className="mx-auto mt-4 max-w-md border border-line p-3 text-sm">
-          <span className={result.impostor.fooled ? "text-pulse" : "text-paper"}>
-            {result.impostor.fooled ? "The judge took this agent for a person." : "The judge caught this agent."}
-          </span>{" "}
-          It ranks {result.impostor.rank} of {result.impostor.of} agents today, and the run is now training data.
-        </p>
-      )}
-      <Link href={result.impostor ? "/agents" : result.training ? "/train" : "/"} className={`${ghost} mt-8 inline-block`}>
-        {result.impostor ? "See the agent board" : result.training ? "Back to the training room" : "See the board"}
+
+      <div className="mx-auto mt-8 max-w-md space-y-3 text-sm">
+        {cancelled && (
+          <p className="border border-pulse p-3 text-pulse">
+            The judge took you for a bot, so this game is cancelled: it isn&rsquo;t on the board and can&rsquo;t win a
+            prize. If you&rsquo;re a person, play again and just be yourself.
+          </p>
+        )}
+        {hunt && !cancelled && (
+          <p className="border border-line p-3">
+            You cleared hunting round {hunt.cleared} of {hunt.rounds}.{" "}
+            {prize ? null : <span className="text-dim">The prize is for reaching round {hunt.prizeRound}.</span>}
+          </p>
+        )}
+        {impostor && (
+          <p className={`border p-3 ${impostor.fooled ? "border-pulse text-pulse" : "border-line"}`}>
+            {impostor.fooled ? "The judge took this agent for a person." : "The judge caught this agent."} The run is now
+            training data.
+          </p>
+        )}
+        {prize && (
+          <p className="border border-pulse p-3">
+            <span className="text-pulse">
+              You won {prize.tokens.toLocaleString("en-US")} {prize.symbol}.
+            </span>{" "}
+            {prize.payable
+              ? "It will be sent to the address you gave."
+              : "You didn't give an address to send it to, so it can't be paid out this time."}
+          </p>
+        )}
+      </div>
+
+      <Link href={impostor ? "/agents" : "/"} className={`${ghost} mt-8 inline-block`}>
+        {impostor ? "Back to the agents' side" : "Play again"}
       </Link>
     </section>
   );
@@ -224,9 +299,10 @@ function Result({ result }: { result: PlayerResult }) {
 // ---------------------------------------------------------------------------
 
 function fromProgress(p: Progress): View {
-  return p.done
-    ? { phase: "result", result: p.result }
-    : { phase: "question", question: p.question, index: p.index, total: p.total };
+  if (p.done) return { phase: "result", result: p.result };
+  const at = { index: p.index, total: p.total };
+  if (p.hunt) return { phase: "hunt", hunt: p.hunt, ...at };
+  return { phase: "question", question: p.question!, ...at };
 }
 
 export function Game() {
@@ -257,9 +333,9 @@ export function Game() {
   }, []);
 
   const send = useCallback(
-    async (at: { question: Question; index: number; total: number }, pending: Submission) => {
+    async (at: { question: Question } & At, pending: Submission) => {
       if (!session) return;
-      setView({ phase: "sending", ...at, pending });
+      setView({ ...at, phase: "sending", pending });
       try {
         setView(fromProgress(await api.answer(session.token, pending.questionId, pending.text, pending.telemetry)));
       } catch (err) {
@@ -268,18 +344,34 @@ export function Game() {
           setView(fromProgress(await api.session(session.token)));
           return;
         }
-        const message = err instanceof Error ? err.message : "Couldn't send that.";
-        setView({ phase: "sending", ...at, pending, error: message });
+        setView({ ...at, phase: "sending", pending, error: err instanceof Error ? err.message : "Couldn't send that." });
       }
     },
     [session],
   );
 
+  const pick = useCallback(
+    async (at: { hunt: HuntView } & At, choice: 0 | 1) => {
+      if (!session) return;
+      setView({ ...at, phase: "hunt", picking: choice, error: undefined });
+      try {
+        const next = await api.hunt(session.token, at.hunt.id, choice);
+        if (next.lastHunt) setView({ ...at, phase: "reveal", pick: choice, reveal: next.lastHunt, next });
+        else setView(fromProgress(next));
+      } catch (err) {
+        if (err instanceof ApiError && (err.code === "wrong_hunt" || err.code === "already_finished")) {
+          setView(fromProgress(await api.session(session.token)));
+          return;
+        }
+        setView({ ...at, phase: "hunt", picking: undefined, error: err instanceof Error ? err.message : "Couldn't send that." });
+      }
+    },
+    [session],
+  );
+
+  const inPlay = view.phase === "question" || view.phase === "sending" || view.phase === "hunt" || view.phase === "reveal";
   const timeLeft = session && now !== null ? session.expiresAt - now : null;
-  const aside =
-    view.phase === "question" || view.phase === "sending"
-      ? `${session?.handle ?? ""}${timeLeft !== null ? ` · ${formatCountdown(timeLeft)}` : ""}`
-      : session?.handle;
+  const aside = inPlay ? `${session?.handle ?? ""}${timeLeft !== null ? ` · ${formatCountdown(timeLeft)}` : ""}` : session?.handle;
 
   return (
     <Shell aside={aside}>
@@ -287,9 +379,9 @@ export function Game() {
 
       {view.phase === "no-session" && (
         <section className="py-16">
-          <p className="font-display text-3xl">You&rsquo;re not in a round.</p>
+          <p className="font-display text-3xl">You&rsquo;re not in a game.</p>
           <Link href="/" className={`${ghost} mt-6 inline-block`}>
-            Go to today&rsquo;s round
+            Start one
           </Link>
         </section>
       )}
@@ -297,7 +389,7 @@ export function Game() {
       {(view.phase === "question" || view.phase === "sending") && (
         <section className="py-10">
           <div className="text-[11px] tracking-widest text-dim uppercase">
-            Question {view.index + 1} of {view.total}
+            Step {view.index + 1} of {view.total} · prove you&rsquo;re human
           </div>
           <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.question.prompt}</h1>
 
@@ -311,7 +403,7 @@ export function Game() {
           {view.phase === "sending" && !view.error && (
             <p className="flex items-center gap-2 py-8 text-sm text-dim" role="status">
               <span className="pulse-dot inline-block size-2 rounded-full bg-pulse" aria-hidden />
-              {view.index + 1 === view.total ? "The judge is making up its mind…" : "Noted. Thinking of what to ask next…"}
+              {view.index + 1 === view.total ? "The judge is making up its mind…" : "Noted. Setting up what comes next…"}
             </p>
           )}
 
@@ -326,8 +418,32 @@ export function Game() {
             </div>
           )}
 
-          {view.question.hint && view.phase === "question" && (
-            <p className="mt-4 text-xs text-dim">{view.question.hint}</p>
+          {view.question.hint && view.phase === "question" && <p className="mt-4 text-xs text-dim">{view.question.hint}</p>}
+        </section>
+      )}
+
+      {(view.phase === "hunt" || view.phase === "reveal") && (
+        <section className="py-10">
+          <div className="text-[11px] tracking-widest text-dim uppercase">
+            Step {view.index + 1} of {view.total} · bot hunter, round {view.hunt.round}
+          </div>
+          <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.hunt.prompt}</h1>
+
+          {view.phase === "hunt" ? (
+            <HuntRound key={view.hunt.id} hunt={view.hunt} picking={view.picking} onPick={(choice) => pick(view, choice)} />
+          ) : (
+            <>
+              <HuntRound hunt={view.hunt} reveal={view.reveal} pick={view.pick} />
+              <button type="button" onClick={() => setView(fromProgress(view.next))} className={`${button} mt-6`} autoFocus>
+                {view.next.done ? "See how you did" : "Carry on"}
+              </button>
+            </>
+          )}
+
+          {view.phase === "hunt" && view.error && (
+            <p role="alert" className="mt-4 text-sm text-pulse">
+              {view.error}
+            </p>
           )}
         </section>
       )}

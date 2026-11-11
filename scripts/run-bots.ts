@@ -11,7 +11,7 @@ import { rand } from "./bots/synth";
 import { answerText } from "./bots/text";
 
 /**
- * Send the house bots through a running game.
+ * Send the house agents through a running game.
  *
  *   npm run bots                              every persona once, against localhost:3000
  *   npm run bots -- --only humanizer --count 5
@@ -20,12 +20,13 @@ import { answerText } from "./bots/text";
  *   npm run bots -- --browser                 also run the Playwright bot through the real page
  *   npm run bots -- --stealth 8               only the hardest agents: a real browser driven like a person,
  *                                             one persona each, answers written by Claude (needs credentials)
- *   npm run bots -- --agent-key mh_agent_…    compete for the agent bounty with a builder's key
- *   npm run bots -- --paying --wallets .solana-dev/players
- *                                             enter the public competition as paying players instead
+ *   npm run bots -- --human                   play the human side instead, as a bot pretending to be a player
+ *   npm run bots -- --wallets .solana-dev/players
+ *                                             pay each run's fee from these test wallets
  *
- * By default the bots play in the private training room using the house-bot
- * password, so every run adds agent-labelled examples to data/training/.
+ * Agents enter with an agent key: --agent-key, or AGENT_KEY in .env.local.
+ * Mark the key as the house's on the owner page and its runs are free and
+ * can't win. Every run is recorded as an agent and trains the judge.
  */
 
 const { values: args } = parseArgs({
@@ -33,14 +34,13 @@ const { values: args } = parseArgs({
     url: { type: "string", default: process.env.PMH_URL ?? "http://localhost:3000" },
     only: { type: "string" },
     count: { type: "string", default: "1" },
-    password: { type: "string", default: process.env.HOUSE_BOT_PASSWORD ?? "housebot-dev" },
+    "agent-key": { type: "string", default: process.env.AGENT_KEY },
     fast: { type: "boolean", default: false },
     llm: { type: "boolean", default: false },
     browser: { type: "boolean", default: false },
     stealth: { type: "string" },
     "stealth-from": { type: "string", default: "0" },
-    paying: { type: "boolean", default: false },
-    "agent-key": { type: "string", default: process.env.AGENT_KEY },
+    human: { type: "boolean", default: false },
     wallets: { type: "string" },
     rpc: { type: "string", default: process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com" },
   },
@@ -87,39 +87,44 @@ async function pay(wallet: Keypair, transactionBase64: string): Promise<string> 
 async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
   const handle = `${persona.name}-${Math.random().toString(36).slice(2, 6)}`.slice(0, 20);
   const ua = persona.name === "api-bot" ? undefined : persona.respond({ id: "", kind: "text", category: "", prompt: "" }, "x", 0).env?.ua;
-  // Training room by default; the public competition (and its entry fee) with --paying.
-  const forBounty = Boolean(args["agent-key"]) && !args.paying;
-  const entry = args.paying
-    ? { handle, wallet: wallet?.publicKey.toBase58() }
-    : forBounty
-      ? { handle, key: args["agent-key"] }
-      : { handle, password: args.password };
+  // The bot side by default; the human side, as an impostor, with --human.
+  const path = args.human ? "/api/enter" : "/api/agents/enter";
+  const entry = args.human ? { handle, wallet: wallet?.publicKey.toBase58() } : { handle, key: args["agent-key"] };
 
-  let entered = await post(args.paying ? "/api/enter" : forBounty ? "/api/agents/enter" : "/api/train/enter", entry, ua);
+  let entered = await post(path, entry, ua);
   if (entered.status === 402 && entered.json.payment) {
-    if (!wallet) throw new Error("The server wants an entry fee. Pass --wallets <dir of keypairs> with --paying.");
+    if (!wallet) throw new Error("The server wants a fee. Pass --wallets <dir of keypairs>, or use a house key.");
     const payment = entered.json.payment as { roundId: string; intentId: string; transaction: string };
     const signature = await pay(wallet, payment.transaction);
-    entered = await post("/api/enter", { ...entry, roundId: payment.roundId, intentId: payment.intentId, signature }, ua);
+    entered = await post(path, { ...entry, roundId: payment.roundId, intentId: payment.intentId, signature }, ua);
   }
   if (entered.status !== 200) throw new Error(`${handle}: could not enter: ${entered.json.message}`);
 
   const token = entered.json.token as string;
-  let question = entered.json.question as Question;
+  let step = entered.json as { question?: Question; hunt?: { id: string } };
   let clock = rand(3000, 9000);
   for (;;) {
-    const text = await answerText(question, persona.voice, args.llm!);
-    const telemetry = persona.respond(question, text, clock);
-    const wait = persona.latencyMs?.(telemetry) ?? telemetry.submittedAt - telemetry.shownAt;
-    await sleep(args.fast ? wait / 25 : wait);
-    const res = await post("/api/answer", { token, questionId: question.id, text, telemetry }, ua);
-    if (res.status !== 200) throw new Error(`${handle}: answer rejected: ${res.json.message}`);
-    if (res.json.done) {
-      const r = res.json.result as { score: number; verdict: Kind; quip: string };
-      return { persona: persona.name, handle, score: r.score, verdict: r.verdict, quip: r.quip };
+    let res;
+    if (step.hunt) {
+      // A bot on the human side has to hunt too. This one guesses.
+      await sleep(args.fast ? 100 : rand(2500, 7000));
+      res = await post("/api/hunt", { token, huntId: step.hunt.id, pick: Math.random() < 0.5 ? 0 : 1 }, ua);
+    } else {
+      const question = step.question!;
+      const text = await answerText(question, persona.voice, args.llm!);
+      const telemetry = persona.respond(question, text, clock);
+      const wait = persona.latencyMs?.(telemetry) ?? telemetry.submittedAt - telemetry.shownAt;
+      await sleep(args.fast ? wait / 25 : wait);
+      res = await post("/api/answer", { token, questionId: question.id, text, telemetry }, ua);
+      clock = telemetry.submittedAt + rand(300, 900);
     }
-    question = res.json.question as Question;
-    clock = telemetry.submittedAt + rand(300, 900);
+    if (res.status !== 200) throw new Error(`${handle}: move rejected: ${res.json.message}`);
+    if (res.json.done) {
+      const r = res.json.result as { score: number; verdict: Kind; quip: string; prize?: { tokens: number }; cancelled?: boolean };
+      const note = r.prize ? ` [won ${r.prize.tokens}]` : r.cancelled ? " [cancelled]" : "";
+      return { persona: persona.name, handle, score: r.score, verdict: r.verdict, quip: r.quip + note };
+    }
+    step = res.json as typeof step;
   }
 }
 
@@ -137,10 +142,14 @@ async function main() {
   const jobs: Promise<BotResult>[] = [];
   let w = 0;
   for (const persona of roster) {
-    for (let i = 0; i < count; i++) jobs.push(play(persona, wallets.length ? wallets[w++ % wallets.length] : undefined));
+    // An agent key pays from its builder's wallet, so every agent run signs with the first one.
+    for (let i = 0; i < count; i++) jobs.push(play(persona, wallets.length ? wallets[args.human ? w++ % wallets.length : 0] : undefined));
   }
-  if (args.browser || wanted?.includes("browser")) jobs.push(runBrowserBot(args.url!, args.password!, { llm: args.llm! }));
-  for (let i = 0; i < stealth; i++) jobs.push(runStealthBot(args.url!, args.password!, Number(args["stealth-from"]) + i));
+  if (!args.human && !args["agent-key"]) {
+    throw new Error("Agents need a key: pass --agent-key, or set AGENT_KEY in .env.local. Get one at /agents.");
+  }
+  if (args.browser || wanted?.includes("browser")) jobs.push(runBrowserBot(args.url!, args["agent-key"]!, { llm: args.llm! }));
+  for (let i = 0; i < stealth; i++) jobs.push(runStealthBot(args.url!, args["agent-key"]!, Number(args["stealth-from"]) + i));
   if (stealth) console.log(`Stealth personas: ${STEALTH_PERSONAS.join(", ")}`);
 
   console.log(`Running ${jobs.length} bot(s) against ${args.url}${args.fast ? " (fast)" : ", in real time; this takes a minute or two"}…`);
@@ -153,7 +162,7 @@ async function main() {
   for (const r of results) {
     console.log(`  ${r.score.toFixed(1).padStart(5)}  ${r.verdict.padEnd(7)}  ${r.persona.padEnd(22)}  ${r.quip}`);
   }
-  if (results.length && !args.paying) {
+  if (results.length) {
     const fooled = results.filter((r) => r.verdict === "human").length;
     console.log(`\n${fooled} of ${results.length} bots passed as human.`);
   }

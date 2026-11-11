@@ -2,38 +2,31 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import {
-  ApiError,
-  api,
-  connectWallet,
-  findWallet,
-  payEntryFee,
-  saveSession,
-  type PaymentRequest,
-  type RoundSummary,
-} from "@/lib/client";
+import { api, connectWallet, enterPaying, findWallet, saveSession, type HumanSummary, type PaymentRequest } from "@/lib/client";
 
 const field =
   "w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none";
+const label = "mb-1 block text-[11px] tracking-widest text-dim uppercase";
 
-/** The public entry form for the daily competition: a handle and, when fees are live, a wallet. */
-export function EnterForm({ round }: { round: RoundSummary }) {
+/** Start a game on the human side: a handle, and, when prizes are paid in real tokens, somewhere to send one. */
+export function EnterForm({ summary }: { summary: HumanSummary }) {
   const router = useRouter();
   const [handle, setHandle] = useState("");
-  const [wallet, setWallet] = useState<string | null>(null);
+  const [wallet, setWallet] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A fee that has been sent but not yet confirmed. Retrying re-checks it instead of charging again.
   const [sent, setSent] = useState<{ payment: PaymentRequest; signature: string } | null>(null);
 
-  const needsWallet = round.paymentMode === "solana";
-  const fee = `${round.entryFee.toLocaleString("en-US")} ${round.symbol}`;
+  const onChain = summary.paymentMode === "solana";
+  const hasFee = summary.entryFee > 0;
+  const fee = `${summary.entryFee.toLocaleString("en-US")} ${summary.symbol}`;
 
   async function connect() {
     setError(null);
     const provider = findWallet();
     if (!provider) {
-      setError("No Solana wallet found in this browser. Install Phantom or Solflare, then reload.");
+      setError("No Solana wallet found in this browser. Paste an address instead, or install Phantom or Solflare.");
       return;
     }
     try {
@@ -43,36 +36,15 @@ export function EnterForm({ round }: { round: RoundSummary }) {
     }
   }
 
-  const confirmPaid = (body: Record<string, unknown>, payment: PaymentRequest, signature: string) =>
-    api.enter({ ...body, roundId: payment.roundId, intentId: payment.intentId, signature });
-
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
     setError(null);
-    const body = { handle, wallet: wallet ?? undefined };
     try {
-      let session;
-      if (sent) {
-        setBusy("Checking your payment…");
-        session = await confirmPaid(body, sent.payment, sent.signature);
-      } else {
-        setBusy("Entering…");
-        try {
-          session = await api.enter(body);
-        } catch (err) {
-          // 402 with a transaction attached means: pay the fee, then come back with the signature.
-          if (!(err instanceof ApiError) || err.code !== "payment_required") throw err;
-          const payment = err.body.payment as PaymentRequest;
-          const provider = findWallet();
-          if (!provider) throw new Error("Wallet disconnected. Reconnect and try again.");
-          setBusy(`Approve ${fee} in your wallet…`);
-          const signature = await payEntryFee(provider, payment);
-          setSent({ payment, signature });
-          setBusy("Waiting for the payment to confirm…");
-          session = await confirmPaid(body, payment, signature);
-        }
-      }
+      const session = await enterPaying(api.enter, { handle, wallet: wallet.trim() || undefined }, sent, (stage, sentNow) => {
+        setBusy(stage);
+        if (sentNow) setSent(sentNow);
+      });
       saveSession(session);
       router.push("/play");
     } catch (err) {
@@ -81,14 +53,10 @@ export function EnterForm({ round }: { round: RoundSummary }) {
     }
   }
 
-  if (!round.open) {
-    return <p className="border border-line p-4 text-sm">This round has closed. The next one opens at midnight UTC.</p>;
-  }
-
   return (
     <form onSubmit={submit} className="space-y-4">
       <div>
-        <label htmlFor="handle" className="mb-1 block text-[11px] tracking-widest text-dim uppercase">
+        <label htmlFor="handle" className={label}>
           Your handle
         </label>
         <input
@@ -103,24 +71,38 @@ export function EnterForm({ round }: { round: RoundSummary }) {
         />
       </div>
 
-      {needsWallet && (
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <button type="button" onClick={connect} className="border border-line px-3 py-2 hover:border-paper">
-            {wallet ? "Wallet connected" : "Connect wallet"}
-          </button>
-          {wallet && <span className="text-dim">{`${wallet.slice(0, 4)}…${wallet.slice(-4)}`}</span>}
-          {round.cluster && round.cluster !== "mainnet-beta" && (
-            <span className="text-xs text-dim">Network: {round.cluster}. Set your wallet to match.</span>
+      {onChain && (
+        <div>
+          <label htmlFor="wallet" className={label}>
+            Solana address {hasFee ? "" : "for your prize (optional)"}
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="wallet"
+              className={field}
+              value={wallet}
+              onChange={(e) => setWallet(e.target.value)}
+              placeholder={hasFee ? "connect a wallet to pay the fee" : "where to send it if you win"}
+              autoComplete="off"
+              spellCheck={false}
+              required={hasFee}
+            />
+            <button type="button" onClick={connect} className="shrink-0 border border-line px-3 hover:border-paper">
+              Connect
+            </button>
+          </div>
+          {summary.cluster && summary.cluster !== "mainnet-beta" && (
+            <p className="mt-1 text-xs text-dim">Network: {summary.cluster}. This is a test coin with no value.</p>
           )}
         </div>
       )}
 
       <button
         type="submit"
-        disabled={Boolean(busy) || (needsWallet && !wallet)}
+        disabled={Boolean(busy)}
         className="w-full bg-pulse px-4 py-3 text-ink transition-opacity disabled:opacity-40 sm:w-auto sm:min-w-64"
       >
-        {busy ?? (sent ? "Check my payment again" : needsWallet ? `Pay ${fee} and play` : `Play (${fee})`)}
+        {busy ?? (sent ? "Check my payment again" : hasFee ? `Pay ${fee} and play` : "Play")}
       </button>
 
       {error && (
@@ -143,8 +125,8 @@ export function EnterForm({ round }: { round: RoundSummary }) {
       <p className="max-w-xl text-xs text-dim">
         While you answer, the game records your keystroke timing, edits, pointer movement, drawing strokes and browser
         details, and the judge uses them along with your answers. By playing you agree these recordings and your answers
-        are kept and may be used or shared, without your handle or wallet, for research into telling people from AI.
-        Don&rsquo;t share anything private.
+        are kept; that your answers may be shown, without your handle, to other players as part of the game; and that
+        both may be used or shared for research into telling people from AI. Don&rsquo;t share anything private.
       </p>
     </form>
   );

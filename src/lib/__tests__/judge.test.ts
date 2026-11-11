@@ -97,7 +97,7 @@ const RESULT: JudgeResult = { score: 81, behaviorScore: 80, heuristicScore: 80, 
 
 function example(label: "human" | "agent", judgeCorrect: boolean, handle: string): TrainingExample {
   return {
-    entryId: handle, roundId: "2026-01-01", recordedAt: 1, label, cohortId: "house-bots", handle, questions: QUESTIONS,
+    entryId: handle, roundId: "2026-01-01", recordedAt: 1, label, cohortId: "agents", handle, questions: QUESTIONS,
     answers: [{ questionId: "q1", text: `answer from ${handle}`, serverLatencyMs: 9000, features: extractAnswerFeatures("text", "x", typed("x", [100])) }],
     features: { ikiCv: 0.5 }, judge: RESULT, judgeCorrect, telemetry: {},
   };
@@ -111,7 +111,7 @@ test("the judge's prompt for a player carries no label, cohort, tester code or h
     ruleHits: ["+10 keystroke timing varies the way typing does"],
     lessons: [],
   });
-  for (const secret of ["house-bots", "trainers", "housebot-dev", "train-dev", "cohort", "label", "handle", "wallet"]) {
+  for (const secret of ["agents", "players", "mh_agent_", "cohort", "label", "handle", "wallet", "house"]) {
     assert.ok(!prompt.includes(secret), `prompt leaks "${secret}"`);
   }
   // A player can't close the answer tag and speak as the game.

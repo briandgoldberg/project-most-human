@@ -274,6 +274,44 @@ export async function readTrainingFull(): Promise<TrainingExample[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Bot Hunter
+// ---------------------------------------------------------------------------
+
+/** A machine-written decoy answer, kept so the same decoy is reused rather than rewritten. */
+export async function readDecoy(key: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new Error("Invalid decoy key");
+  return (await backend().getDoc<{ text: string }>(`decoys/${key}`))?.value.text ?? null;
+}
+
+export async function saveDecoy(key: string, text: string): Promise<void> {
+  if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new Error("Invalid decoy key");
+  await backend().putDoc(`decoys/${key}`, { text }, null);
+}
+
+/** One player's pick in one hunt: what they were shown and whether they found the person. */
+export interface HuntRecord {
+  at: number;
+  roundId: string;
+  hunterEntryId: string;
+  sourceEntryId: string;
+  level: number;
+  prompt: string;
+  human: string;
+  decoy: string;
+  correct: boolean;
+  /** How long the hunter took to decide. */
+  ms: number;
+}
+
+export async function appendHuntRecord(record: HuntRecord): Promise<void> {
+  await withLock("hunts", () => backend().append(`hunts/${record.roundId}`, record));
+}
+
+export async function readHuntRecords(): Promise<HuntRecord[]> {
+  return backend().readLog<HuntRecord>("hunts/", "hunts/~");
+}
+
+// ---------------------------------------------------------------------------
 // Behaviour model
 // ---------------------------------------------------------------------------
 

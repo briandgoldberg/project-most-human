@@ -1,11 +1,11 @@
 import { cookies } from "next/headers";
 import { respond } from "@/lib/http";
-import { TRAINING_COOKIE } from "@/lib/training";
+import { OWNER_COOKIE } from "@/lib/owner";
 
-/** Lock the training room again on this browser. */
+/** Lock the owner's page again on this browser. */
 export async function POST() {
   return respond(async () => {
-    (await cookies()).delete(TRAINING_COOKIE);
+    (await cookies()).delete(OWNER_COOKIE);
     return { ok: true };
   });
 }

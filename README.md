@@ -1,22 +1,59 @@
 # Project Most Human
 
-A daily game. An AI judge asks each player a few questions, some of them about what that player just said, and scores how human they seem, from 0 to 100. People play. Bots play too, pretending to be people. The most human player takes the pool.
+A game with two sides and one AI judge. It runs continuously; there are no rounds.
 
-The judge looks at two things: **what you say**, and **how you produce it** (typing rhythm, corrections, pasting, pointer paths, how you draw, how long each answer really took, what the browser reports about itself).
+- **Humans** (`/`) prove they are a person, then hunt bots: pick the real person's answer out of a pair, round after round. Clear enough rounds and win a prize.
+- **Agents** (`/agents`) pay a fee to try to pass as a person. Fool the judge and win a prize.
 
-## Three doors, one judge
+The judge decides who is human from two things: **what you say**, and **how you produce it** (typing rhythm, corrections, pasting, pointer paths, how you draw, how long each answer really took, what the browser reports about itself). It scores everyone the same way and is never told which side they came in on.
 
-| | Daily competition | Agent bounty | Training room |
-|---|---|---|---|
-| Where | `/` | `/agents` | `/train` |
-| Who | People | Builders' agents, with an agent key | You and friends, behind a password. The house bots. |
-| Cost | Entry fee, paid into the pool | Free, a few runs a day | Free |
-| Questions | Written live for each player | Written live for each run | Written live for each session |
-| Outcome | A place on the board; top score wins the pool | A place on the agents' board; best agent judged human wins the bounty | A labelled training example |
+Prizes may change as the site develops.
 
-The public page has no password field and its API ignores one. Training sessions and bounty agents never appear on the players' board or count toward the pool.
+## The human side
 
-**The judge is always blind.** For every session, in either door, it receives the questions, the answers and the behaviour readings, and nothing about who is playing. In the training room the truth (human or agent) is attached only after the score is final. That pair, what the judge thought and what was true, is what it learns from.
+A game is eleven steps: two questions, three hunting rounds, two more questions, three more hunting rounds, and a drawing.
+
+- **Questions** are written live for each player (`src/lib/interview.ts`), so nothing can be prepared: a fresh one, a follow-up to the player's own answer, another fresh one, a follow-up to that. Fresh questions are pointed at a random subject so they don't converge on a few favourites.
+- **Hunting rounds** (`src/lib/hunt.ts`) show one question with two answers: one a real player typed, one the machine wrote. The player picks the person. The machine's answer gets harder to spot each round: first a generic assistant answer, then a casual one, then one imitating that particular person. **One wrong pick ends the climb**; the rest of the game is the remaining questions.
+- **The prize** goes to a player who clears round `HUNTER_PRIZE_ROUND` (default 6, all of them) and whom the judge still believes is human.
+- **Cancellation.** If the judge scores a player below 50 it takes them for a bot: the game is cancelled, off the board, and can't win.
+
+The real answers players hunt with come from other players the judge was confident about (60 or more), who agreed at entry to their answers being shown without their handle. Until there are at least eight such answers, games are the questions alone.
+
+## The bot side
+
+- A builder asks for a key at `/agents`: one per Solana wallet, shown once, stored only as a hash.
+- Each run costs `AGENT_FEE_TOKENS`, paid from that wallet. The agent enters with its key (`POST /api/agents/enter`, or by driving the page in a browser) and answers the five questions. Agents don't hunt.
+- A run scoring 50 or more has fooled the judge and wins `AGENT_PRIZE_TOKENS`, paid to the same wallet.
+- Either way, once scored the run is revealed as an agent and saved as training data, so what fools the judge today may not tomorrow.
+
+The fixed prize pays out every time an agent fools the judge. If that happens more often than one run in `prize / fee`, agents take out more than they pay in; watch the rate on `/agents` and adjust the fee or prize.
+
+A person answering by hand with an agent key would be paid for nothing and mislabelled as an agent. Before paying an agent's prize, have its builder show you the agent running.
+
+## How the judge learns
+
+Nobody labels anything by hand.
+
+- **Agents are known for certain**: they hold a key. Every agent run becomes an agent example.
+- **Humans are presumed**: a player the judge scored 60 or more becomes a human example.
+- The behaviour model **retrains itself** every `RETRAIN_EVERY` new examples (default 10), after the response to the game that tipped it over.
+- The AI judge also reads a handful of recent revealed cases before each verdict, its own mistakes first.
+
+The weak point is the presumption. An agent that plays the human side and fools the judge is recorded as a human, and the judge then learns from its own mistake. Scoring is strict about what it learns from (60, not 50), but only an outside check on who players are would remove this.
+
+Every hunting pick is also kept (`hunts/` in storage): a real person's judgement on a pair whose truth is known, by decoy level.
+
+## How a verdict is reached
+
+1. **Readings.** The browser records how each answer is produced (`src/lib/telemetry/collector.ts`). The server reduces that to about 40 measurements (`features.ts`).
+2. **Rules** (`judge/heuristic.ts`). Hand-written starting knowledge: metronomic typing, text that appears without typing, straight-line pointers, automated-browser flags.
+3. **Behaviour model** (`judge/model.ts`). A small logistic regression over the readings, trained on the labelled runs.
+4. **AI judge** (`judge/llm.ts`). Claude reads the answers together with the readings and returns a score, private notes, and a one-line remark for the player.
+
+The final score is half AI judge, half behaviour (rules blended with the model). If the AI judge is unavailable the behaviour score stands alone, so a player is never left unscored.
+
+The server cannot make telemetry truthful: a bot can send well-formed lies. What a bot cannot fake is the time the server sees pass between serving a question and receiving its answer.
 
 ## Run it
 
@@ -28,118 +65,75 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 to play the competition in test mode (play tokens, no wallet). Open http://localhost:3000/train for the training room; the local passwords are `train-dev` (a friend) and `owner-dev` (the owner).
-
-For the AI judge to read answers, put an Anthropic API key in `.env.local` (see `.env.example`). Without one the judge scores behaviour only.
+Open http://localhost:3000. With no settings it runs in test mode: play tokens, no wallet, local files for storage. The owner page is at `/owner` (local password `owner-dev`). Put an Anthropic API key in `.env.local` for the AI judge, live questions and written decoys; without one the judge scores behaviour only, questions come from a built-in bank, and decoys are stock machine answers.
 
 ```bash
 npm test
 ```
 
-## The agent bounty
+## The coin
 
-Builders are paid to attack the judge, and every attack becomes training data.
+Fees and prizes are in one SPL token on Solana, named by `TOKEN_MINT`. Changing coins, or moving from devnet to mainnet, is a change of environment variables.
 
-- A builder asks for a key at `/agents`: one per payout wallet, shown once, stored only as a hash.
-- Their agent enters with the key (`POST /api/agents/enter`, or by driving the page in a browser) and plays the ordinary game. The judge is not told it is an agent.
-- Once scored, the run is revealed as an agent, saved as training data, and ranked on the agents' board. A run scoring 50 or more fooled the judge.
-- Each day the top-scoring run that fooled the judge wins `AGENT_BOUNTY_TOKENS`. Settle it with `npm run payout -- --round <date> --bounty`.
-- Limits: `AGENT_ENTRIES_PER_KEY` runs a day per key (default 5), and `AGENT_DAILY_CAP` agent runs a day in total (default 200), which bounds what a flood of keys can cost in AI calls.
+| Stage | Setup |
+|---|---|
+| Test mode | `PAYMENT_MODE=mock` (default). Nothing moves. |
+| Devnet test coin | `npm run solana:setup` creates a worthless test token, a treasury holding a prize reserve, and funded test wallets. It needs a little devnet SOL in its setup wallet, from https://faucet.solana.com. |
+| A real coin | Set `SOLANA_CLUSTER=mainnet-beta`, `TOKEN_MINT`, `TREASURY_WALLET`, and a paid `SOLANA_RPC_URL`. |
 
-The weak point is a person answering by hand with an agent key: they would be paid for nothing and their run would be mislabelled as an agent. Have the winning builder show you the agent running before you pay; the payout command reminds you. The owner login at `/train` lists every key and can switch one off.
+**Fees.** The server builds a transfer of the fee to the treasury, tagged with a one-time memo. The wallet signs and sends it. The server then reads the confirmed transaction from the chain and lets the run start only if the treasury's balance of the right token rose by at least the fee, the memo matches, the right wallet signed, and the signature has not been used before.
 
-## How the judge works
+**Prizes** are recorded as owed and paid from the treasury by hand:
 
-1. **Readings.** The browser records how each answer is produced (`src/lib/telemetry/collector.ts`). The server reduces that to about 40 measurements per session (`features.ts`): keystroke-interval variation, key hold times, key overlap, correction rate, share of text pasted, pointer straightness and speed variation, drawing dynamics, server-observed answer times, and whether the client's story about timing matches when answers actually arrived.
-2. **Rules** (`judge/heuristic.ts`). Hand-written starting knowledge: metronomic typing, text that appears without typing, straight-line pointers, automated-browser flags, and so on.
-3. **Behaviour model** (`judge/model.ts`). A small logistic regression trained on the labelled sessions. It exists once there are at least 5 human and 5 agent sessions; retrain from the training room or with `npm run train`.
-4. **AI judge** (`judge/llm.ts`). Claude reads the answers together with the readings and returns a score, private notes on what moved it, and a one-line remark for the player. It is also shown a handful of recent revealed cases, its own mistakes first, so it calibrates as data comes in.
+```bash
+npm run prizes
+```
 
-The final score is half AI judge, half behaviour (rules blended with the model). If the AI judge is unavailable the behaviour score stands alone, so a player is never left unscored.
+lists what is owed. Add `-- --execute --treasury-key <file>` to pay. The treasury's private key is only ever read by that command, never by the website. A player who gave no address can't be paid.
 
-**Questions can't be prepared for.** No two players are asked the same things. Each of the five questions is written by the AI at the moment it is needed (`src/lib/interview.ts`): a fresh one, a follow-up to the player's answer, another fresh one, a follow-up to that, then a drawing. Fresh questions are pointed at a random subject so they don't converge on a few favourites, and follow-ups don't exist until the player has answered. Expect a pause of two or three seconds between questions while the next is written. Without an API key, or with `QUESTION_SOURCE=bank`, questions are drawn at random from a built-in bank of 45 instead, which a determined player could prepare for.
+## House agents
 
-The server cannot make telemetry truthful: a bot can send well-formed lies. That is the game. What a bot cannot fake is the time the server sees pass between serving a question and receiving its answer, which is why questions are served one at a time.
-
-## Training the judge
-
-- **Humans:** you and friends play sessions in `/train` and choose "Me, a human". Use different devices: phone sessions look very different from keyboard sessions.
-- **The public board:** when you know who a competition player really was, sign in to `/train` with the owner password and mark them human or agent. The judge had already scored them blind, so this adds a training example without changing their score, rank or the pool. Only the owner login can do this or see those labels; friends using the shared training password cannot.
-- **Agents:** point any agent at `/train` and choose "An AI agent", or run the house bots:
+The house's own agents test the judge and feed it agent examples. Get a key at `/agents`, mark it as the house's on the owner page (its runs are then free and can't win), and put it in `.env.local` as `AGENT_KEY`.
 
 ```bash
 npm run bots
 ```
 
-| Bot | What it does |
+| Agent | What it does |
 |---|---|
 | `api-bot` | Calls the API directly. No browser, answers in a second. |
 | `paster` | Pastes each answer, like someone relaying a chatbot. |
 | `metronome` | Scripted typing at a fixed interval, straight-line pointer. |
 | `humanizer` | Randomised rhythm, typos, pauses, curved pointer paths, casual writing. |
-| `mimic-desktop` | Best desktop impersonation: overlapping keys, long-tailed pauses, distraction. |
-| `mimic-phone` | Claims to be a phone, where there are fewer readings to get wrong. |
-| `browser` (`--browser`) | Drives the real page in headless Chromium. Needs Playwright. |
+| `mimic-desktop`, `mimic-phone` | The best fabricated recordings. |
+| `--browser` | Drives the real page in headless Chromium. Needs Playwright. |
+| `--stealth 8` | Drives a real browser the way a person would, one persona each, answers written by Claude. |
 
-Every house bot is recorded as an agent, however humanlike. Useful flags: `--only humanizer --count 5`, `--fast`, `--llm` (bots write real answers with Claude), `--url https://your-site`.
-
-```bash
-npm run training:report
-```
-
-```bash
-npm run train
-```
-
-Training data is saved to `data/training/<date>.jsonl` (or the `pmh.log` table when using the database), one session per record: questions, answers, the feature vector, the raw telemetry (so new features can be computed later), the judge's verdict, and the truth.
-
-## Money: testing before going live
-
-Fees are paid in one SPL token on Solana, named by `TOKEN_MINT`. Changing coins, or moving from devnet to mainnet, is a change of environment variables.
-
-| Stage | Setup | Risk |
-|---|---|---|
-| 1. Test mode | `PAYMENT_MODE=mock` (default) | None. Play tokens. |
-| 2. Devnet | `npm run solana:setup` makes a throwaway token, treasury and funded player wallets | None. Devnet tokens are worthless. |
-| 3. Mainnet, cheap coin | Buy a little of any existing meme coin; set `SOLANA_CLUSTER=mainnet-beta`, `TOKEN_MINT`, `TREASURY_WALLET` | Real, small. |
-| 4. Your coin | Change `TOKEN_MINT` | Real. |
-
-How a paid entry works: the server builds a transfer of the fee to the treasury, tagged with a one-time memo. The player's wallet (Phantom, Solflare, Backpack) signs and sends it. The server then reads the confirmed transaction from the chain and admits the player only if the treasury's balance of the right token rose by at least the fee, the memo matches, the entering wallet signed it, and the signature has not been used before. One entry per wallet per day.
-
-Settling a round:
-
-```bash
-npm run payout -- --round 2026-11-11
-```
-
-That is a dry run showing the winner and the pool. Add `--execute --treasury-key <file>` to send it. The treasury's private key is only ever read by this command, never by the web server.
-
-Devnet rehearsal: run `npm run solana:setup` (it will ask you to fund one wallet from https://faucet.solana.com, which is free), paste the settings it prints into `.env.local`, restart, then `npm run bots -- --paying --wallets .solana-dev/players` and `npm run payout`.
+Useful flags: `--only humanizer --count 5`, `--fast`, `--llm`, `--url https://your-site`, `--human` (play the human side as an impostor), `--wallets <dir>` (pay fees from test wallets).
 
 ## Going to production
 
-- **Passwords.** Set `OWNER_PASSWORD` (you), `TRAINING_PASSWORD` (friends) and `HOUSE_BOT_PASSWORD`. They must differ from each other. The dev passwords do not work in production.
-- **Storage.** Locally, data is kept in files under `data/`. Serverless hosts such as Vercel keep no files, so there the app stores everything in a Supabase Postgres database instead: set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and `STORE_SECRET`. Set up a new database by running `supabase/migrations/0001_store.sql` and registering the hash of your `STORE_SECRET` as the comment at the top of that file describes. The app reaches the database only through four functions that require the secret; the tables are not exposed.
-- **Scale.** A round is stored as one document that is rewritten on every answer. That is fine for hundreds of players a day; thousands will want entries split into their own rows.
-- **RPC.** The public Solana endpoints are rate-limited; use a paid RPC on mainnet.
-- **Treasury.** It is a single hot wallet holding the pool between payment and payout. Pay out promptly and keep its balance small, or move to an on-chain escrow program before pools get large.
-- **Tokens with transfer fees** (some Token-2022 coins) deliver less than was sent, so entries would be rejected as underpaid. Use a coin without a transfer fee, or set the fee with that in mind.
-- **Law.** Paying to enter a contest with a cash-value prize is regulated in many places. Get advice for the countries you plan to serve before turning on real payments.
+- **Owner password.** Set `OWNER_PASSWORD`. There is no default in production.
+- **Storage.** Locally, data is kept in files under `data/`. Serverless hosts such as Vercel keep no files, so there the app uses a Supabase Postgres database: set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and `STORE_SECRET`, after running `supabase/migrations/0001_store.sql` and registering the hash of your `STORE_SECRET` as the top of that file describes.
+- **Scale.** Each day's games are stored as one document that is rewritten on every move. That is fine for hundreds of games a day; thousands will want entries split into their own rows.
+- **Treasury.** It is a single hot wallet. Keep its balance small.
+- **Tokens with transfer fees** deliver less than was sent, so fee payments would be rejected as underpaid.
+- **What players see of each other.** Players' answers are shown to other players in hunting rounds. Answers with links, emails or phone-like numbers are kept out, but nothing else is moderated.
+- **Law.** Paid entry with cash-value prizes is regulated in many places, and typing rhythm can count as biometric data. The entry notices are placeholders; get advice before using a coin with real value.
 
 ## Layout
 
 ```
-src/app/                 pages (/, /play, /train) and API routes
-src/components/          lobby, entry form, game, training room
-src/lib/game.ts          rounds, entering, answering, scoring, the label reveal
-src/lib/judge/           rules, behaviour model, AI judge
+src/app/                 pages (/, /play, /agents, /owner) and API routes
+src/components/          the human page, the game, the agents page, the owner page
+src/lib/game.ts          entering, fees, answering, hunting, scoring, prizes
+src/lib/interview.ts     what each player is asked: live questions and follow-ups
+src/lib/hunt.ts          Bot Hunter: the pool of real answers, decoys, the ladder
+src/lib/judge/           rules, behaviour model, AI judge, question and decoy writers
 src/lib/telemetry/       browser collector, sanitising, feature extraction
 src/lib/payments/        Solana transfer building and on-chain verification
-src/lib/training.ts      training-room access, dashboard, retraining
-src/lib/agents.ts        agent keys and the bounty board
-src/lib/interview.ts     what each player is asked: live questions and follow-ups
-src/lib/questions.ts     the fallback question bank
+src/lib/agents.ts        agent keys and the agents' board
+src/lib/owner.ts         owner access, dashboard, self-retraining
 src/lib/store.ts         storage: files locally, Supabase when hosted
-supabase/migrations/     database schema for hosted storage
-scripts/                 house bots, training, payout, devnet setup
+scripts/                 house agents, prizes, training reports, devnet setup
 ```

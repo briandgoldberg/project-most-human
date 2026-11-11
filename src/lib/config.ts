@@ -1,26 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import path from "node:path";
-import type { Kind } from "./types";
-
-/**
- * A cohort is a group of trusted testers who share a password to the private
- * training room. Everything they play is labelled and kept as training data.
- */
-export interface Cohort {
-  id: string;
-  /** Ground truth for the cohort's sessions. "ask" = each tester says which they are when they start. */
-  label: Kind | "ask";
-  password: string;
-  /** The owner can also say what players on the public board really were, and see those labels. Nobody else can. */
-  owner?: boolean;
-}
-
-/** Passwords that only work outside production, so local runs need no setup. */
-const DEV_COHORTS: Cohort[] = [
-  { id: "owner", label: "ask", password: "owner-dev", owner: true },
-  { id: "trainers", label: "ask", password: "train-dev" },
-  { id: "house-bots", label: "agent", password: "housebot-dev" },
-];
 
 function env(name: string): string | undefined {
   const v = process.env[name];
@@ -33,51 +11,12 @@ function num(name: string, fallback: number): number {
 }
 
 /**
- * Who may enter the training room:
- *   OWNER_PASSWORD      you alone; everything trainers can do, plus labelling the public board
- *   TRAINING_PASSWORD   your friends; each session declares human or agent
- *   HOUSE_BOT_PASSWORD  the house bots; always labelled agent
- * or TRAINING_COHORTS, a JSON array of { id, label, password, owner? }, for finer groups.
+ * The password to the owner's page, where players are labelled, agent keys are
+ * managed and the judge is retrained. Outside production there is a default so
+ * local runs need no setup; in production there is none.
  */
-export function cohorts(): Cohort[] {
-  const raw = env("TRAINING_COHORTS");
-  if (raw) {
-    const parsed = JSON.parse(raw) as Cohort[];
-    for (const c of parsed) {
-      if (!c.id || !c.password || !["human", "agent", "ask"].includes(c.label)) {
-        throw new Error(`TRAINING_COHORTS: invalid cohort ${JSON.stringify(c.id)}`);
-      }
-    }
-    return parsed;
-  }
-  const fromEnv: Cohort[] = [];
-  const owner = env("OWNER_PASSWORD");
-  const trainers = env("TRAINING_PASSWORD");
-  const bots = env("HOUSE_BOT_PASSWORD");
-  if (trainers) fromEnv.push({ id: "trainers", label: "ask", password: trainers });
-  if (bots) fromEnv.push({ id: "house-bots", label: "agent", password: bots });
-  if (owner) {
-    // If the owner password matched a shared one, everyone holding that one would become the owner.
-    if (owner === trainers || owner === bots) {
-      console.error("[config] OWNER_PASSWORD is the same as another password, so owner access is switched off.");
-    } else {
-      fromEnv.push({ id: "owner", label: "ask", password: owner, owner: true });
-    }
-  }
-  if (fromEnv.length) return fromEnv;
-  return process.env.NODE_ENV === "production" ? [] : DEV_COHORTS;
-}
-
-const digest = (s: string) => createHash("sha256").update(s).digest();
-
-/** Constant-time lookup of the cohort a training password belongs to. */
-export function cohortForPassword(code: string): Cohort | undefined {
-  const given = digest(code);
-  let match: Cohort | undefined;
-  for (const c of cohorts()) {
-    if (timingSafeEqual(given, digest(c.password))) match = c;
-  }
-  return match;
+export function ownerPassword(): string | undefined {
+  return env("OWNER_PASSWORD") ?? (process.env.NODE_ENV === "production" ? undefined : "owner-dev");
 }
 
 export type PaymentMode = "mock" | "solana";
@@ -91,17 +30,21 @@ export function config() {
   return {
     dataDir: env("PMH_DATA_DIR") ?? path.join(process.cwd(), "data"),
     paymentMode,
-    /** Entry fee in whole tokens. */
-    entryFeeTokens: num("ENTRY_FEE_TOKENS", 1000),
+    /** What a player pays to play, in whole tokens. 0 = free. */
+    entryFeeTokens: num("ENTRY_FEE_TOKENS", 0),
     tokenSymbol: env("TOKEN_SYMBOL") ?? (paymentMode === "mock" ? "PLAY" : "TOKEN"),
-    /** What the best agent of the day wins for being judged human, in whole tokens. */
-    agentBounty: num("AGENT_BOUNTY_TOKENS", 5000),
-    /** How many times a day one agent key may enter. */
-    agentEntriesPerKey: num("AGENT_ENTRIES_PER_KEY", 5),
-    /** Ceiling on agent entries per day across all keys, which bounds what a flood of keys can cost in AI calls. */
-    agentDailyCap: num("AGENT_DAILY_CAP", 200),
-    /** House cut of the pool, in basis points. */
-    rakeBps: num("RAKE_BPS", 0),
+    /** "off" removes the Bot Hunter rounds from players' games. */
+    hunting: (env("BOT_HUNTER") ?? "on") as "on" | "off",
+    /** A player who clears this many hunting rounds wins the hunter prize. */
+    hunterPrizeRound: num("HUNTER_PRIZE_ROUND", 6),
+    hunterPrizeTokens: num("HUNTER_PRIZE_TOKENS", 500),
+    /** What an agent pays per run, and what it wins if the judge takes it for human. */
+    agentFeeTokens: num("AGENT_FEE_TOKENS", 100),
+    agentPrizeTokens: num("AGENT_PRIZE_TOKENS", 1000),
+    /** Ceiling on agent runs per day across all keys. */
+    agentDailyCap: num("AGENT_DAILY_CAP", 500),
+    /** The behaviour model retrains itself once this many new labelled runs have come in. */
+    retrainEvery: num("RETRAIN_EVERY", 10),
     /** How long a player has to finish after entering. */
     sessionMinutes: num("SESSION_MINUTES", 30),
     questionSalt: env("QUESTION_SALT") ?? "",

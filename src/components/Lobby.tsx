@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { api, type RoundSummary } from "@/lib/client";
+import { api, type HumanSummary } from "@/lib/client";
 import { EnterForm } from "./EnterForm";
 import { Shell } from "./Shell";
-import { formatCountdown, useNow } from "./useNow";
 
-const REFRESH_MS = 10_000;
+const REFRESH_MS = 15_000;
+const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -18,25 +18,33 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Leaderboard({ round }: { round: RoundSummary }) {
-  if (round.leaderboard.length === 0) {
-    return <p className="py-6 text-sm text-dim">Nobody has been judged yet today. Go first.</p>;
+function Board({ summary }: { summary: HumanSummary }) {
+  if (summary.board.length === 0) {
+    return <p className="py-6 text-sm text-dim">Nobody has finished a game this week. Go first.</p>;
   }
   return (
     <ol className="divide-y divide-line">
-      {round.leaderboard.map((row) => (
-        <li key={row.rank} className="flex items-baseline gap-3 py-3">
-          <span className="w-6 shrink-0 text-right text-xs text-dim">{row.rank}</span>
+      {summary.board.map((row, i) => (
+        <li key={i} className="flex items-baseline gap-3 py-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="break-all">{row.handle}</span>
-              {row.rank === 1 && (
-                <span className="text-[11px] tracking-widest text-pulse uppercase">{round.open ? "leading" : "winner"}</span>
+              {row.won !== undefined && (
+                <span className="text-[11px] tracking-widest text-pulse uppercase">
+                  won {fmt(row.won)} {summary.symbol}
+                </span>
               )}
             </div>
             <div className="text-xs text-dim">&ldquo;{row.quip}&rdquo;</div>
           </div>
-          <span className="shrink-0 font-display text-xl tabular-nums">{row.score.toFixed(1)}</span>
+          {row.rounds > 0 && (
+            <span className="shrink-0 text-xs text-dim">
+              round {row.cleared} of {row.rounds}
+            </span>
+          )}
+          <span className="w-12 shrink-0 text-right font-display text-xl tabular-nums" title="How human the judge found them">
+            {row.score.toFixed(1)}
+          </span>
         </li>
       ))}
     </ol>
@@ -44,17 +52,16 @@ function Leaderboard({ round }: { round: RoundSummary }) {
 }
 
 export function Lobby() {
-  const [round, setRound] = useState<RoundSummary | null>(null);
+  const [summary, setSummary] = useState<HumanSummary | null>(null);
   const [failed, setFailed] = useState(false);
-  const now = useNow();
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const next = await api.round();
+        const next = await api.summary();
         if (alive) {
-          setRound(next);
+          setSummary(next);
           setFailed(false);
         }
       } catch {
@@ -69,70 +76,63 @@ export function Lobby() {
     };
   }, []);
 
-  const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-
   return (
-    <Shell aside={round ? `Round ${round.roundId}` : undefined}>
+    <Shell aside="For humans">
       <section className="py-10 sm:py-14">
         <h1 className="font-display text-4xl leading-[1.05] sm:text-6xl">
-          Convince the machine
+          Prove you&rsquo;re a person.
           <br />
-          you&rsquo;re a person.
+          Then hunt the bots.
         </h1>
         <p className="mt-5 max-w-xl text-sm text-dim">
-          An AI asks you a few questions, some of them about what you just told it, and scores how human you seem. It
-          reads your answers, and it watches how you produce them. Bots are playing too. The most human player of the
-          day takes the pool.
+          An AI asks you a few questions and decides whether you&rsquo;re human. In between, you do its job: two answers
+          to the same question, one from a real person and one from a machine. Pick the person. It gets harder every
+          round.
         </p>
       </section>
 
-      {failed && !round && (
-        <p className="border border-line p-4 text-sm">
-          Couldn&rsquo;t reach the game server. It will retry on its own.
-        </p>
-      )}
+      {failed && !summary && <p className="border border-line p-4 text-sm">Couldn&rsquo;t reach the game server. It will retry on its own.</p>}
 
-      {round && (
+      {summary && (
         <>
           <section className="flex gap-3 border-y border-line py-4">
-            <Stat label="Pool" value={`${fmt(round.pool)} ${round.symbol}`} />
-            <Stat label="Players" value={String(round.entrants)} />
-            <Stat label="Closes in" value={now === null ? "--:--:--" : formatCountdown(round.endsAt - now)} />
+            <Stat label="Hunter prize" value={`${fmt(summary.prize)} ${summary.symbol}`} />
+            <Stat label="Reach round" value={summary.hunting ? String(summary.prizeRound) : "soon"} />
+            <Stat label="Winners this week" value={`${summary.winners} of ${summary.players}`} />
           </section>
 
           <section className="py-8">
-            <EnterForm round={round} />
+            <EnterForm summary={summary} />
           </section>
 
           <section>
-            <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">
-              Today&rsquo;s board
-            </h2>
-            <Leaderboard round={round} />
+            <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">Recent hunters</h2>
+            <Board summary={summary} />
           </section>
 
           <section className="mt-10 grid gap-6 border-t border-line pt-6 text-sm text-dim sm:grid-cols-3">
             <div>
-              <div className="mb-1 text-paper">1. Enter</div>
-              {round.paymentMode === "solana"
-                ? `Pay ${fmt(round.entryFee)} ${round.symbol} from a Solana wallet. Every fee goes into today's pool.`
-                : `Test mode: entry is ${fmt(round.entryFee)} play tokens and nothing real changes hands.`}
+              <div className="mb-1 text-paper">1. Be human</div>
+              {summary.questionCount} questions, written for you as you go, some about what you just said. If the judge
+              takes you for a bot, your game is cancelled.
             </div>
             <div>
-              <div className="mb-1 text-paper">2. Answer</div>
-              {round.questionCount} questions, one at a time, with {round.sessionMinutes} minutes to finish. Nobody else
-              gets the same ones, and some follow up on your own answers, so there&rsquo;s nothing to prepare.
+              <div className="mb-1 text-paper">2. Hunt</div>
+              {summary.hunting
+                ? `Up to ${summary.huntRounds} rounds between the questions. Each machine answer is harder to spot than the last. One wrong pick ends your climb.`
+                : "Hunting rounds start once enough people have played to hunt with. Until then, it's the questions alone."}
             </div>
             <div>
-              <div className="mb-1 text-paper">3. Get judged</div>
-              You get a score from 0 to 100. Highest score when the round closes at midnight UTC wins the pool.
+              <div className="mb-1 text-paper">3. Win</div>
+              Clear round {summary.prizeRound} and the judge still believes you&rsquo;re human: {fmt(summary.prize)}{" "}
+              {summary.symbol}. Your own answers become what other players hunt with.
             </div>
           </section>
 
           <p className="mt-8 text-xs text-dim">
-            Building an agent instead?{" "}
+            Prizes may change as the site develops.{" "}
             <Link href="/agents" className="text-paper underline underline-offset-4">
-              There&rsquo;s a bounty for fooling the judge
+              Building an agent? There&rsquo;s a prize for fooling the judge
             </Link>
             .
           </p>

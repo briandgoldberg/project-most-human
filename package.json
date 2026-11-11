@@ -13,7 +13,7 @@
     "train": "tsx scripts/train.ts",
     "training:report": "tsx scripts/training-report.ts",
     "solana:setup": "tsx scripts/solana-devnet-setup.ts",
-    "payout": "tsx scripts/payout.ts"
+    "prizes": "tsx scripts/prizes.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",

@@ -1,27 +1,27 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "./config";
-import { FOOLED_AT, GameError, agentBoard, bountyLeader, roundIdFor } from "./game";
+import { GameError, HUMAN_AT, recentAgents, roundIdFor } from "./game";
 import { isValidAddress } from "./payments/address";
 import { readAgentKeys, readRound, updateAgentKeys } from "./store";
 import type { AgentKey } from "./types";
 
 /**
- * The agent bounty: keys for builders, and the board their agents are ranked on.
+ * The bot side: keys for builders, and the record of how their agents did.
  *
  * A key looks like mh_agent_<id>_<secret>. Only a hash of the secret is kept,
- * so a lost key cannot be recovered, only replaced by the owner.
+ * so a lost key cannot be recovered, only replaced.
  */
 
 const PREFIX = "mh_agent_";
 const NAME = /^[A-Za-z0-9][A-Za-z0-9 _.-]{1,23}$/;
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
-/** Issue a key to a builder. One key per payout wallet. The key itself is returned once and never stored. */
+/** Issue a key to a builder. One key per wallet. The key itself is returned once and never stored. */
 export async function issueAgentKey(input: { name: unknown; wallet: unknown }): Promise<{ key: string; name: string }> {
   const name = (typeof input.name === "string" ? input.name : "").trim().replace(/\s+/g, " ");
   const wallet = typeof input.wallet === "string" ? input.wallet.trim() : "";
   if (!NAME.test(name)) throw new GameError(400, "bad_name", "Pick a builder name of 2 to 24 letters, numbers, spaces, or . _ -");
-  if (!isValidAddress(wallet)) throw new GameError(400, "bad_wallet", "Give the Solana address the bounty should be paid to");
+  if (!isValidAddress(wallet)) throw new GameError(400, "bad_wallet", "Give the Solana address your agent pays from and is paid to");
 
   const id = randomBytes(6).toString("hex");
   const secret = randomBytes(24).toString("base64url");
@@ -56,42 +56,44 @@ export async function requireAgentKey(presented: unknown): Promise<AgentKey> {
   return key;
 }
 
-export async function setAgentKeyDisabled(id: unknown, disabled: unknown): Promise<void> {
+/** Owner controls: switch a key off or on, or mark it as the house's own. */
+export async function setAgentKey(id: unknown, change: { disabled?: unknown; house?: unknown }): Promise<void> {
   await updateAgentKeys((keys) => {
     const key = typeof id === "string" ? keys[id] : undefined;
     if (!key) throw new GameError(404, "no_key", "No such agent key");
-    key.disabled = disabled === true ? true : undefined;
+    if (change.disabled !== undefined) key.disabled = change.disabled === true ? true : undefined;
+    if (change.house !== undefined) key.house = change.house === true ? true : undefined;
   });
 }
 
-/** What anyone may see about the bounty: the terms and today's board. */
-export async function bountySummary(roundId = roundIdFor()) {
+/** What anyone may see about the bot side: the terms, and how recent agents did. */
+export async function agentSummary() {
   const cfg = config();
-  const [state, keys] = await Promise.all([readRound(roundId), readAgentKeys()]);
-  const board = state ? agentBoard(state) : [];
-  const leading = state ? bountyLeader(state) : undefined;
+  const [agents, keys] = await Promise.all([recentAgents(), readAgentKeys()]);
   return {
-    roundId,
-    bounty: cfg.agentBounty,
+    fee: cfg.agentFeeTokens,
+    prize: cfg.agentPrizeTokens,
     symbol: cfg.tokenSymbol,
-    fooledAt: FOOLED_AT,
-    entriesPerKey: cfg.agentEntriesPerKey,
-    payout: state?.bountyPayout,
-    board: board.slice(0, 100).map((e, i) => ({
-      rank: i + 1,
+    foolAt: HUMAN_AT,
+    paymentMode: cfg.paymentMode,
+    cluster: cfg.paymentMode === "solana" ? cfg.solana.cluster : undefined,
+    runs: agents.length,
+    fooled: agents.filter((e) => e.result!.score >= HUMAN_AT).length,
+    board: agents.slice(0, 50).map((e) => ({
       handle: e.handle,
       builder: keys[e.agentKeyId!]?.name ?? "unknown",
+      house: Boolean(e.house),
       score: e.result!.score,
       quip: e.result!.quip,
-      fooled: e.result!.score >= FOOLED_AT,
-      leading: e.id === leading?.id,
+      fooled: e.result!.score >= HUMAN_AT,
+      won: e.prize?.tokens,
     })),
   };
 }
 
 /** For the owner: every key, and what it has done today. */
-export async function agentKeysForOwner(roundId = roundIdFor()) {
-  const [state, keys] = await Promise.all([readRound(roundId), readAgentKeys()]);
+export async function agentKeysForOwner() {
+  const [state, keys] = await Promise.all([readRound(roundIdFor()), readAgentKeys()]);
   const entries = state ? Object.values(state.entries).filter((e) => e.agentKeyId) : [];
   return Object.values(keys)
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -103,7 +105,8 @@ export async function agentKeysForOwner(roundId = roundIdFor()) {
         name: k.name,
         wallet: k.wallet,
         disabled: Boolean(k.disabled),
-        entriesToday: mine.length,
+        house: Boolean(k.house),
+        runsToday: mine.length,
         bestToday: scores.length ? Math.max(...scores) : null,
       };
     });

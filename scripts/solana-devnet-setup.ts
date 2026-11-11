@@ -20,6 +20,7 @@ const { values: args } = parseArgs({
   options: {
     players: { type: "string", default: "3" },
     tokens: { type: "string", default: "100000" },
+    reserve: { type: "string", default: "10000000" },
     decimals: { type: "string", default: "6" },
     rpc: { type: "string", default: process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com" },
     dir: { type: "string", default: ".solana-dev" },
@@ -84,6 +85,18 @@ async function main() {
     console.log(`Created test token ${mint.toBase58()} (${decimals} decimals)`);
   }
 
+  // The treasury pays the prizes, so it needs tokens to pay with and a little SOL for fees.
+  if ((await connection.getBalance(treasury.publicKey)) < 0.2 * LAMPORTS_PER_SOL) {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: treasury.publicKey, lamports: 0.5 * LAMPORTS_PER_SOL }),
+    );
+    await sendAndConfirmTransaction(connection, tx, [payer]);
+  }
+  const reserveRaw = BigInt(args.reserve!) * BigInt(10) ** BigInt(decimals);
+  const vault = await getOrCreateAssociatedTokenAccount(connection, payer, mint, treasury.publicKey);
+  if (vault.amount < reserveRaw) await mintTo(connection, payer, mint, vault.address, payer, reserveRaw - vault.amount);
+  console.log(`treasury  ${treasury.publicKey.toBase58()}  holds ${args.reserve} tokens for prizes`);
+
   // Give each player a little SOL for fees and a stack of tokens.
   const perPlayerRaw = BigInt(args.tokens!) * BigInt(10) ** BigInt(decimals);
   for (const [i, player] of players.entries()) {
@@ -108,14 +121,14 @@ SOLANA_CLUSTER=devnet
 TOKEN_MINT=${mint.toBase58()}
 TOKEN_SYMBOL=TEST
 TREASURY_WALLET=${treasury.publicKey.toBase58()}
-ENTRY_FEE_TOKENS=1000
 
 Then:
-  npm run bots -- --paying --wallets ${dir}/players     paying players, signed with the test wallets
-  npm run payout -- --round <date> --treasury-key ${dir}/treasury.json --execute
+  get an agent key at /agents using a player wallet's address, and run paying agents with
+    npm run bots -- --agent-key <key> --wallets ${dir}/players
+  pay out what has been won with
+    npm run prizes -- --treasury-key ${dir}/treasury.json --execute
 
-To play in a browser instead, import a player key from ${dir}/players/ into Phantom and switch Phantom to devnet.
-The treasury needs a little SOL to pay out; the payout command tells you if it is short.`);
+To use a browser wallet instead, import a player key from ${dir}/players/ into Phantom and switch Phantom to devnet.`);
 }
 
 main().catch((err) => {
