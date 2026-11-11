@@ -11,6 +11,8 @@ export interface Question {
   category: string;
   prompt: string;
   hint?: string;
+  /** Time allowed, in seconds. When it runs out the page submits whatever is there. */
+  seconds?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,8 @@ export interface EntryAnswer {
   answeredAt: number;
   /** Server-observed time between serving the question and receiving the answer. */
   serverLatencyMs: number;
+  /** Arrived well after the time limit, which the real page never does. */
+  late?: boolean;
   features: AnswerFeatures;
 }
 
@@ -178,8 +182,14 @@ export interface Entry {
   label?: Kind;
   /** Set when a trainer labelled this competition entry after the fact: the cohort that did it. */
   labelledBy?: string;
-  /** Training sessions get their own draw of questions instead of the day's set. */
+  /**
+   * The questions this player has been asked so far. Every player gets their
+   * own, written as they go, so nothing can be prepared in advance. (Entries
+   * from before this was introduced have none and used the round's shared set.)
+   */
   questions?: Question[];
+  /** True when questions are being written one at a time for this player. */
+  adaptive?: boolean;
   prizeEligible: boolean;
   status: "playing" | "scoring" | "scored";
   /** Which wording of the data notice this player was shown when they entered. */

@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import type { Question } from "./types";
 
 /**
- * The house question bank. Each day's round draws from it with a seed derived
- * from the date, so the set changes daily and everyone on a given day gets the
- * same questions. With QUESTION_SOURCE=llm the judge model writes fresh
- * questions instead (see judge/questions-llm.ts) and this bank is the fallback.
+ * The house question bank. Normally the judge model writes each player's
+ * questions live (see interview.ts) and this bank is the fallback when it
+ * can't: no API key, QUESTION_SOURCE=bank, or the model call failing.
  *
  * Good questions are cheap for a person to answer from lived experience and
  * awkward to answer convincingly without one: senses, pettiness, bodies,
@@ -106,6 +105,18 @@ export function bankQuestionsFor(roundId: string, salt = ""): Question[] {
     kind: "text",
   }));
   return [...text, drawQuestionFor(roundId, salt)];
+}
+
+/** One text question from the bank, steering clear of prompts and categories already used. */
+export function randomTextQuestion(usedPrompts: string[], usedCategories: string[]): { category: string; prompt: string } {
+  const unused = TEXT_BANK.filter((q) => !usedPrompts.includes(q.prompt));
+  const fresh = unused.filter((q) => !usedCategories.includes(q.category));
+  const pool = fresh.length ? fresh : unused.length ? unused : TEXT_BANK;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+export function randomDrawQuestion(): { category: string; prompt: string; hint?: string } {
+  return DRAW_BANK[Math.floor(Math.random() * DRAW_BANK.length)];
 }
 
 export const BANK_SIZE = { text: TEXT_BANK.length, draw: DRAW_BANK.length };

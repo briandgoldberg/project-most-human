@@ -1,13 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config, type Cohort } from "./config";
 import { judgeEntry } from "./judge";
-import { llmWriteQuestions } from "./judge/llm";
+import { QUESTION_PLAN, nextQuestion } from "./interview";
 import { isValidAddress } from "./payments/address";
-import { MAX_ANSWER_CHARS, TEXT_QUESTIONS_PER_ROUND, bankQuestionsFor, drawQuestionFor } from "./questions";
+import { MAX_ANSWER_CHARS, bankQuestionsFor } from "./questions";
 import { appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
 import { aggregateFeatures, deviceOf, extractAnswerFeatures } from "./telemetry/features";
 import { sanitizeTelemetry } from "./telemetry/sanitize";
-import type { Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, Round, RoundState } from "./types";
+import type { Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, RoundState } from "./types";
 
 /**
  * The game has two doors into the same judge:
@@ -45,6 +45,10 @@ const solana = () => import("./payments/solana");
 export const CONSENT_VERSION = "v2";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** An empty answer is accepted this close to the limit, to allow for the page's clock running slightly ahead. */
+const TIME_UP_SLACK_MS = 3000;
+/** Network delay allowed past the limit before an answer counts as late. */
+const LATE_GRACE_MS = 10_000;
 const INTENT_TTL_MS = 20 * 60 * 1000;
 const HANDLE = /^[A-Za-z0-9][A-Za-z0-9 _.-]{1,19}$/;
 
@@ -58,28 +62,18 @@ export function roundIdFor(now = Date.now()): string {
 }
 
 async function createRound(roundId: string): Promise<RoundState> {
-  const cfg = config();
   const startsAt = Date.parse(`${roundId}T00:00:00Z`);
-  let questions = bankQuestionsFor(roundId, cfg.questionSalt);
-  let questionSource: Round["questionSource"] = "bank";
-
-  if (cfg.questionSource === "llm" && cfg.judge.llmEnabled) {
-    try {
-      const yesterday = await readRound(roundIdFor(startsAt - DAY_MS));
-      const avoid = yesterday?.round.questions.filter((q) => q.kind === "text").map((q) => q.prompt) ?? [];
-      const written = await llmWriteQuestions(roundId, TEXT_QUESTIONS_PER_ROUND, avoid);
-      questions = [
-        ...written.map((q, i): Question => ({ ...q, id: `${roundId}-q${i + 1}`, kind: "text" })),
-        drawQuestionFor(roundId, cfg.questionSalt),
-      ];
-      questionSource = "llm";
-    } catch (err) {
-      console.error(`[round ${roundId}] question writer failed; using the question bank:`, err);
-    }
-  }
-
   return {
-    round: { id: roundId, startsAt, endsAt: startsAt + DAY_MS, questions, questionSource, createdAt: Date.now() },
+    round: {
+      id: roundId,
+      startsAt,
+      endsAt: startsAt + DAY_MS,
+      // Players each get their own questions now (see interview.ts). This shared
+      // set is kept only so entries from before that change can still be read.
+      questions: bankQuestionsFor(roundId, config().questionSalt),
+      questionSource: "bank",
+      createdAt: Date.now(),
+    },
     entries: {},
     intents: {},
     signatures: {},
@@ -90,8 +84,12 @@ function withRound<T>(roundId: string, fn: (state: RoundState) => T | Promise<T>
   return updateRound(roundId, fn, () => createRound(roundId));
 }
 
-/** The questions this entry is answering: its own draw in the training room, otherwise the day's set. */
+/** The questions this entry has been asked so far. */
 const questionsOf = (state: RoundState, entry: Entry): Question[] => entry.questions ?? state.round.questions;
+
+/** How many questions this entry will be asked in all. */
+const totalOf = (state: RoundState, entry: Entry): number =>
+  entry.adaptive ? QUESTION_PLAN.length : questionsOf(state, entry).length;
 
 /** Competition entries only. Training sessions never count toward the pool or the board. */
 const competitors = (state: RoundState): Entry[] => Object.values(state.entries).filter((e) => e.prizeEligible);
@@ -129,7 +127,7 @@ export async function roundSummary(roundId = roundIdFor()) {
     roundId,
     endsAt: state.round.endsAt,
     open: Date.now() < state.round.endsAt,
-    questionCount: state.round.questions.length,
+    questionCount: QUESTION_PLAN.length,
     entrants: competitors(state).length,
     scored: board.length,
     pool: poolTokens(state),
@@ -193,7 +191,7 @@ function sessionFor(state: RoundState, entry: Entry, token: string): Session {
     training: !entry.prizeEligible,
     question: questions[entry.progress],
     index: entry.progress,
-    total: questions.length,
+    total: totalOf(state, entry),
     expiresAt: entry.createdAt + config().sessionMinutes * 60_000,
   };
 }
@@ -204,6 +202,8 @@ interface NewEntry {
   payment: EntryPayment;
   training?: { cohort: Cohort; label: Kind };
   userAgent?: string;
+  /** The player's opening question, written before the entry is created. */
+  first: Question;
 }
 
 function addEntry(state: RoundState, input: NewEntry): Session {
@@ -219,8 +219,8 @@ function addEntry(state: RoundState, input: NewEntry): Session {
     payment: input.payment,
     cohortId: input.training?.cohort.id,
     label: input.training?.label,
-    // Trainers play many sessions a day, so each gets a fresh draw from the bank.
-    questions: input.training ? bankQuestionsFor(`${state.round.id}:${id}`, config().questionSalt) : undefined,
+    questions: [input.first],
+    adaptive: true,
     prizeEligible: !input.training,
     status: "playing",
     progress: 0,
@@ -277,9 +277,10 @@ export async function enter(input: EnterInput): Promise<Session> {
 
   // --- Test mode: play tokens, nothing to pay --------------------------------
   if (cfg.paymentMode === "mock") {
+    const first = await nextQuestion(0, []);
     return withRound(roundIdFor(), (state) => {
       guard(state);
-      return addEntry(state, { ...base, payment: { mode: "mock", amountTokens: cfg.entryFeeTokens } });
+      return addEntry(state, { ...base, first, payment: { mode: "mock", amountTokens: cfg.entryFeeTokens } });
     });
   }
 
@@ -360,6 +361,7 @@ export async function enter(input: EnterInput): Promise<Session> {
   });
   if (!check.ok) throw new GameError(402, "payment_unverified", check.reason);
 
+  const first = await nextQuestion(0, []);
   return withRound(roundId, (state) => {
     const again = reissue(state);
     if (again) return again;
@@ -367,6 +369,7 @@ export async function enter(input: EnterInput): Promise<Session> {
     if (!live || live.usedByEntry) throw new GameError(409, "intent_used", "That payment request was already completed");
     const session = addEntry(state, {
       ...base,
+      first,
       handle: live.handle,
       payment: {
         mode: "solana",
@@ -406,9 +409,11 @@ export async function enterTraining(input: {
   } else {
     label = input.cohort.label;
   }
+  const first = await nextQuestion(0, []);
   return withRound(roundIdFor(), (state) =>
     addEntry(state, {
       handle,
+      first,
       payment: { mode: "waived", amountTokens: 0 },
       training: { cohort: input.cohort, label },
       userAgent: input.userAgent,
@@ -591,19 +596,24 @@ export async function answer(input: {
     }
     const questions = questionsOf(state, entry);
     const question = questions[entry.progress];
-    if (input.questionId !== question.id) {
+    const total = totalOf(state, entry);
+    if (!question || input.questionId !== question.id) {
       throw new GameError(409, "wrong_question", "That isn't the current question", {
         question,
         index: entry.progress,
-        total: questions.length,
+        total,
       });
     }
+    // When the clock runs out the page sends whatever is there, even nothing.
+    const took = now - entry.servedAt[entry.progress];
+    const limitMs = question.seconds ? question.seconds * 1000 : null;
+    const timeUp = limitMs !== null && took >= limitMs - TIME_UP_SLACK_MS;
     if (question.kind === "text") {
-      if (!text) throw new GameError(400, "empty_answer", "Say something");
+      if (!text && !timeUp) throw new GameError(400, "empty_answer", "Say something");
       if (text.length > MAX_ANSWER_CHARS) {
         throw new GameError(400, "too_long", `Keep it under ${MAX_ANSWER_CHARS} characters`);
       }
-    } else if (!telemetry.strokes?.length) {
+    } else if (!telemetry.strokes?.length && !timeUp) {
       throw new GameError(400, "empty_drawing", "Draw something first");
     }
 
@@ -612,7 +622,9 @@ export async function answer(input: {
       questionId: question.id,
       text: answerText,
       answeredAt: now,
-      serverLatencyMs: now - entry.servedAt[entry.progress],
+      serverLatencyMs: took,
+      // The page submits by itself at the limit, so anything much later didn't come from the page.
+      late: limitMs !== null && took > limitMs + LATE_GRACE_MS ? true : undefined,
       features: extractAnswerFeatures(question.kind, answerText, telemetry),
     });
     if (telemetry.env) {
@@ -621,15 +633,10 @@ export async function answer(input: {
     }
     entry.progress++;
 
-    if (entry.progress < questions.length) {
-      entry.servedAt.push(Date.now());
-      return {
-        done: false as const,
-        question: questions[entry.progress],
-        index: entry.progress,
-        total: questions.length,
-        questionId: question.id,
-      };
+    if (entry.progress < total) {
+      // Older entries already hold their whole list; start that question's clock now.
+      if (questions[entry.progress]) entry.servedAt[entry.progress] = Date.now();
+      return { done: false as const, questionId: question.id };
     }
     entry.status = "scoring";
     return { done: true as const, questionId: question.id };
@@ -640,8 +647,38 @@ export async function answer(input: {
   });
 
   await saveTelemetry(roundId, entryId, step.questionId, telemetry);
-  if (!step.done) return { done: false, question: step.question, index: step.index, total: step.total };
+  if (!step.done) return serveQuestion(roundId, entryId);
   return { done: true, result: await score(roundId, entryId) };
+}
+
+/**
+ * The question the player is on, writing it first if it doesn't exist yet.
+ * Questions are written outside the round's lock (the model takes a few
+ * seconds) and the player's clock starts only once the question is stored.
+ */
+async function serveQuestion(roundId: string, entryId: string): Promise<AnswerOutcome> {
+  const state = await readRound(roundId);
+  const entry = state?.entries[entryId];
+  if (!state || !entry) throw new GameError(404, "no_entry", "Entry not found");
+  const total = totalOf(state, entry);
+  const existing = questionsOf(state, entry)[entry.progress];
+  if (existing) return { done: false, question: existing, index: entry.progress, total };
+
+  const asked = questionsOf(state, entry);
+  const written = await nextQuestion(
+    entry.progress,
+    entry.answers.map((a, i) => ({ question: asked[i], answer: a.text })),
+  );
+  return updateRound(roundId, (s) => {
+    const e = s.entries[entryId];
+    e.questions ??= [];
+    // If two requests raced to write this question, the first one stored is the question.
+    if (!e.questions[e.progress]) {
+      e.questions[e.progress] = written;
+      e.servedAt[e.progress] = Date.now();
+    }
+    return { done: false as const, question: e.questions[e.progress], index: e.progress, total };
+  });
 }
 
 /** Where a session stands: the current question, or the result. Also finishes scoring that was interrupted. */
@@ -651,6 +688,5 @@ export async function sessionStatus(token: unknown): Promise<AnswerOutcome> {
   const entry = authorise(state, entryId, secret);
   if (entry.status === "scored") return { done: true, result: playerResult(state!, entry) };
   if (entry.status === "scoring") return { done: true, result: await score(roundId, entryId) };
-  const questions = questionsOf(state!, entry);
-  return { done: false, question: questions[entry.progress], index: entry.progress, total: questions.length };
+  return serveQuestion(roundId, entryId);
 }

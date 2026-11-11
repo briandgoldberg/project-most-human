@@ -99,7 +99,11 @@ export function config() {
     /** How long a player has to finish after entering. */
     sessionMinutes: num("SESSION_MINUTES", 30),
     questionSalt: env("QUESTION_SALT") ?? "",
-    questionSource: (env("QUESTION_SOURCE") ?? "bank") as "bank" | "llm",
+    /** "llm": the judge model writes each player's questions live. "bank": drawn at random from the built-in bank. */
+    questionSource: (env("QUESTION_SOURCE") ?? "llm") as "bank" | "llm",
+    /** Seconds allowed per typed answer and per drawing. */
+    questionSeconds: num("QUESTION_SECONDS", 75),
+    drawSeconds: num("DRAW_SECONDS", 45),
     solana: {
       cluster,
       rpcUrl: env("SOLANA_RPC_URL") ?? `https://api.${cluster}.solana.com`,
@@ -114,6 +118,8 @@ export function config() {
     },
     judge: {
       model: env("JUDGE_MODEL") ?? "claude-opus-5-5",
+      /** Model that writes the questions. Players wait on it between questions, so speed matters here. */
+      questionModel: env("QUESTION_MODEL") ?? env("JUDGE_MODEL") ?? "claude-opus-5-5",
       effort: (env("JUDGE_EFFORT") ?? "medium") as "low" | "medium" | "high",
       /** The LLM judge runs when Anthropic credentials are present, unless switched off. */
       llmEnabled:

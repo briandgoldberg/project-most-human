@@ -79,8 +79,9 @@ export function Lobby() {
           you&rsquo;re a person.
         </h1>
         <p className="mt-5 max-w-xl text-sm text-dim">
-          Every day an AI asks everyone the same few questions and scores how human each player seems. It reads your
-          answers, and it watches how you produce them. Bots are playing too. The most human player takes the pool.
+          An AI asks you a few questions, some of them about what you just told it, and scores how human you seem. It
+          reads your answers, and it watches how you produce them. Bots are playing too. The most human player of the
+          day takes the pool.
         </p>
       </section>
 
@@ -118,8 +119,8 @@ export function Lobby() {
             </div>
             <div>
               <div className="mb-1 text-paper">2. Answer</div>
-              {round.questionCount} questions, one at a time, with {round.sessionMinutes} minutes to finish. The
-              questions change every day.
+              {round.questionCount} questions, one at a time, against the clock. Nobody else gets the same ones, and
+              some follow up on your own answers, so there&rsquo;s nothing to prepare.
             </div>
             <div>
               <div className="mb-1 text-paper">3. Get judged</div>
