@@ -93,6 +93,12 @@ export function config() {
       mint: env("TOKEN_MINT"),
       treasury: env("TREASURY_WALLET"),
     },
+    /** Database storage for serverless hosting. Unset = files under dataDir. */
+    supabase: {
+      url: env("SUPABASE_URL")?.replace(/\/+$/, ""),
+      key: env("SUPABASE_PUBLISHABLE_KEY"),
+      secret: env("STORE_SECRET"),
+    },
     judge: {
       model: env("JUDGE_MODEL") ?? "claude-opus-5-5",
       effort: (env("JUDGE_EFFORT") ?? "medium") as "low" | "medium" | "high",

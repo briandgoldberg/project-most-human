@@ -76,7 +76,7 @@ npm run training:report
 npm run train
 ```
 
-Training data is saved to `data/training/<date>.jsonl`, one session per line: questions, answers, the feature vector, the raw telemetry (so new features can be computed later), the judge's verdict, and the truth.
+Training data is saved to `data/training/<date>.jsonl` (or the `pmh.log` table when using the database), one session per record: questions, answers, the feature vector, the raw telemetry (so new features can be computed later), the judge's verdict, and the truth.
 
 ## Money: testing before going live
 
@@ -104,7 +104,8 @@ Devnet rehearsal: run `npm run solana:setup` (it will ask you to fund one wallet
 ## Going to production
 
 - **Passwords.** Set `TRAINING_PASSWORD` and `HOUSE_BOT_PASSWORD`. The dev passwords do not work in production.
-- **Storage.** Data is kept in files under `data/` (`src/lib/store.ts`). That needs a server with a persistent disk. Serverless hosts such as Vercel do not keep files between requests; deploying there means backing the same few functions in `store.ts` with a database.
+- **Storage.** Locally, data is kept in files under `data/`. Serverless hosts such as Vercel keep no files, so there the app stores everything in a Supabase Postgres database instead: set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and `STORE_SECRET`. Set up a new database by running `supabase/migrations/0001_store.sql` and registering the hash of your `STORE_SECRET` as the comment at the top of that file describes. The app reaches the database only through four functions that require the secret; the tables are not exposed.
+- **Scale.** A round is stored as one document that is rewritten on every answer. That is fine for hundreds of players a day; thousands will want entries split into their own rows.
 - **RPC.** The public Solana endpoints are rate-limited; use a paid RPC on mainnet.
 - **Treasury.** It is a single hot wallet holding the pool between payment and payout. Pay out promptly and keep its balance small, or move to an on-chain escrow program before pools get large.
 - **Tokens with transfer fees** (some Token-2022 coins) deliver less than was sent, so entries would be rejected as underpaid. Use a coin without a transfer fee, or set the fee with that in mind.
@@ -121,5 +122,7 @@ src/lib/telemetry/       browser collector, sanitising, feature extraction
 src/lib/payments/        Solana transfer building and on-chain verification
 src/lib/training.ts      training-room access, dashboard, retraining
 src/lib/questions.ts     the question bank and daily draw
+src/lib/store.ts         storage: files locally, Supabase when hosted
+supabase/migrations/     database schema for hosted storage
 scripts/                 house bots, training, payout, devnet setup
 ```

@@ -2,7 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { config } from "../config";
-import type { Features, Question, TrainingExample } from "../types";
+import type { TrainingRecord } from "../store";
+import type { Features, Question } from "../types";
 
 const JUDGE_SYSTEM = `You are the judge in Most Human, a daily game with a prize pool. Players answer a short set of questions, and the player you rate most human wins the pool. Some players are people typing their own answers. Others are AI agents, scripts, or people relaying AI-written text, and they are trying to pass as a person because there is money in it. Your rating decides who gets paid, so a bot that fools you takes the pool from a real person, and a person you wrongly flag loses a prize they earned.
 
@@ -35,7 +36,7 @@ export interface LlmJudgeInput {
   answers: { questionId: string; text: string; serverLatencyMs: number }[];
   features: Features;
   ruleHits: string[];
-  lessons: TrainingExample[];
+  lessons: TrainingRecord[];
 }
 
 export interface LlmJudgeResult {
@@ -66,7 +67,7 @@ function renderAnswers(questions: Question[], answers: LlmJudgeInput["answers"])
     .join("\n\n");
 }
 
-function renderLesson(ex: TrainingExample, n: number): string {
+function renderLesson(ex: TrainingRecord, n: number): string {
   const answers = ex.questions
     .filter((q) => q.kind === "text")
     .map((q) => {

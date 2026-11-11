@@ -4,38 +4,138 @@ import { config } from "./config";
 import type { AnswerTelemetry, RoundState, TrainingExample } from "./types";
 
 /**
- * File-backed storage. Everything lives under the data directory:
+ * Storage. Three kinds of thing are kept:
  *
- *   data/rounds/<round>.json                  round, entries, payment records
- *   data/telemetry/<round>/<entry>.json       raw telemetry per question
- *   data/training/<round>.jsonl               labelled examples (the training set)
- *   data/model/behavior-model.json            the trained behaviour model
+ *   round/<round>                 the round, its entries and payment records
+ *   telemetry/<round>/<entry>     raw telemetry per question
+ *   training/<round>              labelled examples (the training set), append-only
+ *   model/behavior                the trained behaviour model
  *
- * This suits local play and a single server. A serverless deployment needs the
- * same handful of functions backed by a database instead; nothing outside this
- * file touches the disk layout.
+ * Two backends hold them:
+ *
+ *   Files under data/ (the default). Right for local play and a single server
+ *   with a disk.
+ *
+ *   A Postgres database on Supabase, used when SUPABASE_URL is set. Needed on
+ *   serverless hosts such as Vercel, which keep no files and run many copies
+ *   of the server at once. See supabase/migrations/0001_store.sql.
+ *
+ * Nothing outside this file knows which is in use.
  */
 
-const dir = (...parts: string[]) => path.join(config().dataDir, ...parts);
+interface Doc<T> {
+  value: T;
+  version: number;
+}
 
-async function readJson<T>(file: string): Promise<T | null> {
-  try {
-    return JSON.parse(await fs.readFile(file, "utf8")) as T;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
+interface Backend {
+  getDoc<T>(key: string): Promise<Doc<T> | null>;
+  /** expected: null = overwrite, 0 = only if absent, n = only if still at version n. False = someone else got there first. */
+  putDoc(key: string, value: unknown, expected: number | null): Promise<boolean>;
+  append(stream: string, value: unknown): Promise<void>;
+  /** Records from streams in [from, to), oldest first. `strip` drops one bulky field from each. */
+  readLog<T>(from: string, to: string, strip?: string): Promise<T[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+const fileBackend: Backend = {
+  async getDoc<T>(key: string) {
+    try {
+      return { value: JSON.parse(await fs.readFile(docPath(key), "utf8")) as T, version: 1 };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+  },
+  // One process owns the files and writers queue on an in-process lock, so there are no versions to check.
+  async putDoc(key, value) {
+    const file = docPath(key);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    // Write to a temp file and rename, so a crash can't leave a half-written file.
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(value));
+    await fs.rename(tmp, file);
+    return true;
+  },
+  async append(stream, value) {
+    const file = path.join(config().dataDir, `${stream}.jsonl`);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.appendFile(file, JSON.stringify(value) + "\n");
+  },
+  async readLog<T>(from: string, to: string, strip?: string) {
+    const folder = from.split("/")[0];
+    const dir = path.join(config().dataDir, folder);
+    let files: string[];
+    try {
+      files = (await fs.readdir(dir)).filter((f) => f.endsWith(".jsonl")).sort();
+    } catch {
+      return [];
+    }
+    const out: T[] = [];
+    for (const f of files) {
+      const stream = `${folder}/${f.slice(0, -6)}`;
+      if (stream < from || stream >= to) continue;
+      for (const line of (await fs.readFile(path.join(dir, f), "utf8")).split("\n")) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as Record<string, unknown>;
+        if (strip) delete record[strip];
+        out.push(record as T);
+      }
+    }
+    return out;
+  },
+};
+
+/** round/2026-01-01 -> data/rounds/2026-01-01.json, keeping the original on-disk layout. */
+function docPath(key: string): string {
+  const [kind, ...rest] = key.split("/");
+  const folder = kind === "round" ? "rounds" : kind;
+  return path.join(config().dataDir, folder, ...rest) + ".json";
+}
+
+// ---------------------------------------------------------------------------
+// Supabase
+// ---------------------------------------------------------------------------
+
+async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
+  const { url, key, secret } = config().supabase;
+  const res = await fetch(`${url}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", apikey: key! },
+    body: JSON.stringify({ p_secret: secret, ...args }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    // Never include the request in the error: it carries the store secret.
+    throw new Error(`Database call ${fn} failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
   }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : null) as T;
 }
 
-/** Write to a temp file and rename, so a crash can't leave a half-written file. */
-async function writeJson(file: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(value));
-  await fs.rename(tmp, file);
+const supabaseBackend: Backend = {
+  getDoc: <T>(key: string) => rpc<Doc<T> | null>("pmh_get", { p_key: key }),
+  putDoc: (key, value, expected) => rpc<boolean>("pmh_put", { p_key: key, p_value: value, p_expected: expected }),
+  append: (stream, value) => rpc<void>("pmh_append", { p_stream: stream, p_value: value }),
+  readLog: <T>(from: string, to: string, strip?: string) =>
+    rpc<T[]>("pmh_read_log", { p_from: from, p_to: to, p_strip: strip ?? null }),
+};
+
+function backend(): Backend {
+  const { url, key, secret } = config().supabase;
+  if (!url) return fileBackend;
+  if (!key || !secret) throw new Error("SUPABASE_URL is set, so SUPABASE_PUBLISHABLE_KEY and STORE_SECRET are needed too");
+  return supabaseBackend;
 }
 
-// One queue per key, shared across module instances in this process.
+// ---------------------------------------------------------------------------
+// Locks
+// ---------------------------------------------------------------------------
+
+// One queue per key within this process. Across processes, document versions do the same job.
 const globalLocks = globalThis as unknown as { __pmhLocks?: Map<string, Promise<unknown>> };
 const locks = (globalLocks.__pmhLocks ??= new Map());
 
@@ -50,58 +150,61 @@ async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------------------
+// Rounds
+// ---------------------------------------------------------------------------
+
 const ROUND_ID = /^\d{4}-\d{2}-\d{2}$/;
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const MAX_WRITE_ATTEMPTS = 8;
 
-function roundFile(roundId: string): string {
+function roundKey(roundId: string): string {
   if (!ROUND_ID.test(roundId)) throw new Error(`Invalid round id: ${roundId}`);
-  return dir("rounds", `${roundId}.json`);
+  return `round/${roundId}`;
 }
 
 export async function readRound(roundId: string): Promise<RoundState | null> {
   if (!ROUND_ID.test(roundId)) return null;
-  return readJson<RoundState>(roundFile(roundId));
+  return (await backend().getDoc<RoundState>(roundKey(roundId)))?.value ?? null;
 }
 
 /**
  * Read-modify-write a round atomically. `create` builds the round the first
- * time it is touched. Keep `fn` quick: it holds the round's lock.
+ * time it is touched. If another server changed the round in the meantime the
+ * whole step is redone on the fresh copy, so `fn` may run more than once: it
+ * must only change `state` and keep quick.
  */
 export async function updateRound<T>(
   roundId: string,
   fn: (state: RoundState) => T | Promise<T>,
   create?: () => Promise<RoundState>,
 ): Promise<T> {
-  return withLock(`round:${roundId}`, async () => {
-    let state = await readJson<RoundState>(roundFile(roundId));
-    if (!state) {
-      if (!create) throw new Error(`Round ${roundId} does not exist`);
-      state = await create();
+  const key = roundKey(roundId);
+  return withLock(key, async () => {
+    for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
+      const doc = await backend().getDoc<RoundState>(key);
+      let state = doc?.value;
+      if (!state) {
+        if (!create) throw new Error(`Round ${roundId} does not exist`);
+        state = await create();
+      }
+      const result = await fn(state);
+      if (await backend().putDoc(key, state, doc ? doc.version : 0)) return result;
+      await sleep(20 + Math.random() * 60 * (attempt + 1));
     }
-    const result = await fn(state);
-    await writeJson(roundFile(roundId), state);
-    return result;
+    throw new Error(`Round ${roundId} is too busy to update`);
   });
 }
 
-export async function listRoundIds(): Promise<string[]> {
-  try {
-    const files = await fs.readdir(dir("rounds"));
-    return files
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => f.slice(0, -5))
-      .filter((id) => ROUND_ID.test(id))
-      .sort();
-  } catch {
-    return [];
-  }
-}
+// ---------------------------------------------------------------------------
+// Raw telemetry
+// ---------------------------------------------------------------------------
 
-// --- Raw telemetry ---------------------------------------------------------
-
-function telemetryFile(roundId: string, entryId: string): string {
-  if (!ROUND_ID.test(roundId) || !SAFE_ID.test(entryId)) throw new Error("Invalid telemetry path");
-  return dir("telemetry", roundId, `${entryId}.json`);
+function telemetryKey(roundId: string, entryId: string): string {
+  if (!ROUND_ID.test(roundId) || !SAFE_ID.test(entryId)) throw new Error("Invalid telemetry key");
+  return `telemetry/${roundId}/${entryId}`;
 }
 
 export async function saveTelemetry(
@@ -110,55 +213,54 @@ export async function saveTelemetry(
   questionId: string,
   raw: AnswerTelemetry,
 ): Promise<void> {
-  const file = telemetryFile(roundId, entryId);
-  await withLock(`telemetry:${entryId}`, async () => {
-    const all = (await readJson<Record<string, AnswerTelemetry>>(file)) ?? {};
+  const key = telemetryKey(roundId, entryId);
+  // A player answers one question at a time, so only this entry's own requests ever write here.
+  await withLock(key, async () => {
+    const all = (await backend().getDoc<Record<string, AnswerTelemetry>>(key))?.value ?? {};
     all[questionId] = raw;
-    await writeJson(file, all);
+    await backend().putDoc(key, all, null);
   });
 }
 
 export async function readTelemetry(roundId: string, entryId: string): Promise<Record<string, AnswerTelemetry>> {
-  return (await readJson<Record<string, AnswerTelemetry>>(telemetryFile(roundId, entryId))) ?? {};
+  return (await backend().getDoc<Record<string, AnswerTelemetry>>(telemetryKey(roundId, entryId)))?.value ?? {};
 }
 
-// --- Training data ---------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Training data
+// ---------------------------------------------------------------------------
+
+/** A training example as read back for judging and reporting: everything but the raw telemetry. */
+export type TrainingRecord = Omit<TrainingExample, "telemetry">;
 
 export async function appendTraining(example: TrainingExample): Promise<void> {
-  const file = dir("training", `${example.roundId}.jsonl`);
-  await withLock("training", async () => {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.appendFile(file, JSON.stringify(example) + "\n");
-  });
+  await withLock("training", () => backend().append(`training/${example.roundId}`, example));
 }
 
-/** All training examples, oldest first. `lastFiles` limits how many days are read. */
-export async function readTraining(lastFiles?: number): Promise<TrainingExample[]> {
-  let files: string[];
-  try {
-    files = (await fs.readdir(dir("training"))).filter((f) => f.endsWith(".jsonl")).sort();
-  } catch {
-    return [];
-  }
-  if (lastFiles) files = files.slice(-lastFiles);
-  const out: TrainingExample[] = [];
-  for (const f of files) {
-    const text = await fs.readFile(dir("training", f), "utf8");
-    for (const line of text.split("\n")) {
-      if (line.trim()) out.push(JSON.parse(line) as TrainingExample);
-    }
-  }
-  return out;
+/** Training examples, oldest first. `days` limits it to rounds from the last so many days. */
+export async function readTraining(days?: number): Promise<TrainingRecord[]> {
+  const from = days ? new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10) : "";
+  return backend().readLog<TrainingRecord>(`training/${from}`, "training/~", "telemetry");
 }
 
-// --- Behaviour model -------------------------------------------------------
+/** The full training set including raw telemetry, for export and offline analysis. */
+export async function readTrainingFull(): Promise<TrainingExample[]> {
+  return backend().readLog<TrainingExample>("training/", "training/~");
+}
 
-export const modelFile = () => dir("model", "behavior-model.json");
+// ---------------------------------------------------------------------------
+// Behaviour model
+// ---------------------------------------------------------------------------
 
 export async function readModelFile<T>(): Promise<T | null> {
-  return readJson<T>(modelFile());
+  return (await backend().getDoc<T>("model/behavior-model"))?.value ?? null;
 }
 
 export async function writeModelFile(model: unknown): Promise<void> {
-  await writeJson(modelFile(), model);
+  await backend().putDoc("model/behavior-model", model, null);
+}
+
+/** Where things are kept, for messages to the operator. */
+export function storageName(): string {
+  return config().supabase.url ? "the Supabase database" : config().dataDir;
 }

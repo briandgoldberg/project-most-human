@@ -1,9 +1,9 @@
 import "./env";
 import { MIN_EXAMPLES_PER_CLASS, topWeights, trainModel } from "../src/lib/judge/model";
-import { modelFile, readTraining, writeModelFile } from "../src/lib/store";
+import { readTraining, storageName, writeModelFile } from "../src/lib/store";
 
 /**
- * Retrain the behaviour model on everything in data/training/ and save it.
+ * Retrain the behaviour model on every labelled session and save it.
  * The judge picks up the new model on its next verdict.
  *
  *   npm run train
@@ -22,7 +22,7 @@ async function main() {
   }
   const model = trainModel(examples.map((e) => ({ features: e.features, label: e.label })));
   await writeModelFile(model);
-  console.log(`Saved ${modelFile()}`);
+  console.log(`Saved the model to ${storageName()}.`);
   if (model.looAccuracy !== null) console.log(`Leave-one-out accuracy: ${(model.looAccuracy * 100).toFixed(1)}%`);
   console.log("Strongest signals (positive = points toward human):");
   for (const { key, weight } of topWeights(model)) console.log(`  ${weight > 0 ? "+" : ""}${weight.toFixed(3)}  ${key}`);

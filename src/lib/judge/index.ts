@@ -1,6 +1,6 @@
 import { config } from "../config";
-import { readModelFile, readTraining } from "../store";
-import type { EntryAnswer, Features, JudgeResult, Kind, Question, TrainingExample } from "../types";
+import { readModelFile, readTraining, type TrainingRecord } from "../store";
+import type { EntryAnswer, Features, JudgeResult, Kind, Question } from "../types";
 import { heuristicScore } from "./heuristic";
 import { llmJudge } from "./llm";
 import { predictHuman, type BehaviorModel } from "./model";
@@ -11,10 +11,10 @@ const MAX_LESSONS = 6;
  * Pick revealed cases to show the LLM judge: its recent mistakes first, then
  * recent correct calls, balanced between humans and agents.
  */
-export function pickLessons(examples: TrainingExample[], max = MAX_LESSONS): TrainingExample[] {
+export function pickLessons(examples: TrainingRecord[], max = MAX_LESSONS): TrainingRecord[] {
   const recentFirst = [...examples].reverse();
   const ordered = [...recentFirst.filter((e) => !e.judgeCorrect), ...recentFirst.filter((e) => e.judgeCorrect)];
-  const picked: TrainingExample[] = [];
+  const picked: TrainingRecord[] = [];
   const count: Record<Kind, number> = { human: 0, agent: 0 };
   const perClass = Math.ceil(max / 2);
   for (const e of ordered) {
@@ -38,7 +38,7 @@ export interface JudgeOptions {
   /** Force the LLM judge on or off. Defaults to config. */
   useLlm?: boolean;
   model?: BehaviorModel | null;
-  lessons?: TrainingExample[];
+  lessons?: TrainingRecord[];
 }
 
 /**

@@ -1,3 +1,4 @@
+import "./env";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
