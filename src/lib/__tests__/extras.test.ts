@@ -9,7 +9,7 @@ process.env.PAYMENT_MODE = "mock";
 delete process.env.ANTHROPIC_API_KEY;
 
 test("players are told when the daily payout is, from the hour it is scheduled for", async () => {
-  const { nextPayout, untilPayout } = await import("../payouts");
+  const { nextPayout } = await import("../payouts");
   const at = (iso: string) => Date.parse(iso);
   // Before today's run: it is today. At or after it: tomorrow.
   assert.equal(nextPayout(17, at("2026-11-11T10:30:00Z")), at("2026-11-11T17:00:00Z"));
@@ -17,10 +17,6 @@ test("players are told when the daily payout is, from the hour it is scheduled f
   assert.equal(nextPayout(17, at("2026-11-11T23:59:00Z")), at("2026-11-12T17:00:00Z"));
   // Across the end of a month and a year.
   assert.equal(nextPayout(0, at("2026-12-31T00:00:01Z")), at("2027-01-01T00:00:00Z"));
-  assert.equal(untilPayout(17, at("2026-11-11T10:30:00Z")), "in about 7 hours");
-  assert.equal(untilPayout(17, at("2026-11-11T15:40:00Z")), "in about 1 hour");
-  assert.equal(untilPayout(17, at("2026-11-11T16:20:00Z")), "in under an hour");
-  assert.equal(untilPayout(17, at("2026-11-11T17:00:00Z")), "in about 24 hours");
 
   // The site only says a time once the owner has said there is one.
   const { config } = await import("../config");

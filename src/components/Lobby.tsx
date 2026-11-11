@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type HumanSummary, type Me } from "@/lib/client";
-import { nextPayout, untilPayout } from "@/lib/payouts";
+import { nextPayout } from "@/lib/payouts";
 import { EnterForm } from "./EnterForm";
 import { GoogleSignIn } from "./GoogleSignIn";
 import { Shell } from "./Shell";
@@ -66,7 +66,7 @@ function Balance({ summary, me, onMe }: { summary: HumanSummary; me: Me; onMe: (
       ? null
       : now === null
         ? `around ${String(hour).padStart(2, "0")}:00 UTC`
-        : `around ${new Date(nextPayout(hour, now)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time, ${untilPayout(hour, now)}`;
+        : `around ${new Date(nextPayout(hour, now)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} your time`;
 
   async function save(e: FormEvent) {
     e.preventDefault();
