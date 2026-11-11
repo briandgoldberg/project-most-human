@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { agentKeysForOwner } from "./agents";
 import { config, ownerPassword } from "./config";
-import { GameError, prizesOwed } from "./game";
+import { GameError, debriefDue, prizesOwed, recentAgents } from "./game";
 import { humanPool } from "./hunt";
 import { MIN_EXAMPLES_PER_CLASS, topWeights, trainModel, type BehaviorModel } from "./judge/model";
 import { readHuntRecords, readModelFile, readTraining, writeModelFile } from "./store";
@@ -89,6 +89,8 @@ export async function ownerSummary() {
     agent: count("agent"),
     model: modelSummary(model),
     retrainEvery: cfg.retrainEvery,
+    retrainAfterLosses: cfg.retrainAfterLosses,
+    lossesSinceTraining: model ? examples.filter((e) => e.recordedAt > model.trainedAt && e.label === "agent" && !e.judgeCorrect).length : 0,
     runsUntilRetrain: Math.max(0, cfg.retrainEvery - (examples.length - trainedOn)),
     neededPerKind: MIN_EXAMPLES_PER_CLASS,
     llmJudge: cfg.judge.llmEnabled,
@@ -108,6 +110,24 @@ export async function ownerSummary() {
       wonAt: e.prize!.wonAt,
     })),
     agentKeys: keys,
+    // What agents that fooled the judge said about how, newest first, and the ones still to answer.
+    debriefs: (await recentAgents(30))
+      .filter((e) => e.debrief)
+      .slice(0, 30)
+      .map((e) => ({
+        id: e.id,
+        handle: e.handle,
+        builder: keys.find((k) => k.id === e.agentKeyId)?.name ?? "unknown",
+        house: Boolean(e.house),
+        score: e.result!.score,
+        at: e.debrief!.askedAt,
+        due: debriefDue(e),
+        questions: e.debrief!.questions,
+        explanation: e.debrief!.explanation,
+        answers: e.debrief!.answers,
+        code: e.debrief!.code,
+        lessons: e.debrief!.lessons,
+      })),
   };
 }
 
@@ -115,7 +135,7 @@ export async function ownerSummary() {
 
 /**
  * Refit the behaviour model if enough new labelled runs have come in since it
- * was last trained. Agents are labelled by their keys; players by the judge's
+ * was last trained, or if agents have fooled the judge several times since. Agents are labelled by their keys; players by the judge's
  * own confident verdicts. Safe to call often: it does nothing until due.
  */
 export async function retrainIfDue(): Promise<boolean> {
@@ -125,7 +145,10 @@ export async function retrainIfDue(): Promise<boolean> {
   if (human < MIN_EXAMPLES_PER_CLASS || agent < MIN_EXAMPLES_PER_CLASS) return false;
   const model = await readModelFile<BehaviorModel>();
   const trainedOn = model ? model.examples.human + model.examples.agent : 0;
-  if (model && examples.length - trainedOn < config().retrainEvery) return false;
+  // Due when enough new runs have come in, or sooner if the judge has been fooled several times since it last trained.
+  const losses = model ? examples.filter((e) => e.recordedAt > model.trainedAt && e.label === "agent" && !e.judgeCorrect).length : 0;
+  const cfg = config();
+  if (model && examples.length - trainedOn < cfg.retrainEvery && losses < cfg.retrainAfterLosses) return false;
   // Recent behaviour matters most, and this keeps training quick however much has been collected.
   const recent = examples.slice(-3000);
   await writeModelFile(trainModel(recent.map((e) => ({ features: e.features, label: e.label }))));

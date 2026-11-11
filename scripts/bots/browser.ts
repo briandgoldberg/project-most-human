@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { BotResult } from "../run-bots";
+import { SESSION_KEY, sendDebrief } from "./debrief";
 import { answerText } from "./text";
 
 /**
@@ -61,6 +62,13 @@ export async function runBrowserBot(url: string, agentKey: string, opts: { llm: 
 
     const score = Number(await page.locator(".text-8xl").textContent());
     const quip = ((await page.locator("p.font-display").textContent()) ?? "").replace(/[“”]/g, "");
+    const token = await page.evaluate((key: string) => JSON.parse(sessionStorage.getItem(key) ?? "null")?.token as string | undefined, SESSION_KEY);
+    if (token) {
+      await sendDebrief(url, token, {
+        what: "A headless browser driven by Playwright: answers written by a language model, typed with Playwright's keyboard at a fixed delay, pointer moved in straight steps.",
+        file: "scripts/bots/browser.ts",
+      });
+    }
     return { persona: "browser", handle, score, verdict: score >= 50 ? "human" : "agent", quip };
   } finally {
     await browser.close();

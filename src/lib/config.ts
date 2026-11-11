@@ -35,9 +35,13 @@ export function config() {
     tokenSymbol: env("TOKEN_SYMBOL") ?? (paymentMode === "mock" ? "PLAY" : "TOKEN"),
     /** "off" removes the Bot Hunter rounds from players' games. */
     hunting: (env("BOT_HUNTER") ?? "on") as "on" | "off",
-    /** A player who clears this many hunting rounds wins the hunter prize. */
-    hunterPrizeRound: num("HUNTER_PRIZE_ROUND", 6),
-    hunterPrizeTokens: num("HUNTER_PRIZE_TOKENS", 500),
+    /** What a player wins for being judged human, and what each hunting round they clear adds, in order. */
+    humanPrizeTokens: num("HUMAN_PRIZE_TOKENS", 20),
+    huntRoundPrizes: (env("HUNT_ROUND_PRIZES") ?? "20,40,60,80,120,160").split(",").map((x) => Number(x.trim()) || 0),
+    /** How many prizes a day one person may win on the human side. 0 means no limit. */
+    prizesPerPerson: num("PRIZES_PER_PERSON", 0),
+    /** How many games a day one network address may start on the human side: a brake on floods, not on players. 0 means no limit. */
+    gamesPerAddress: num("HUMAN_GAMES_PER_ADDRESS", 100),
     /** What an agent pays per run, and what it wins if the judge takes it for human. */
     agentFeeTokens: num("AGENT_FEE_TOKENS", 100),
     agentPrizeTokens: num("AGENT_PRIZE_TOKENS", 1000),
@@ -45,6 +49,8 @@ export function config() {
     agentDailyCap: num("AGENT_DAILY_CAP", 500),
     /** The behaviour model retrains itself once this many new labelled runs have come in. */
     retrainEvery: num("RETRAIN_EVERY", 10),
+    /** ...or sooner, once it has been fooled this many times since it was last trained. */
+    retrainAfterLosses: num("RETRAIN_AFTER_LOSSES", 3),
     /** How long a player has to finish after entering. */
     sessionMinutes: num("SESSION_MINUTES", 30),
     questionSalt: env("QUESTION_SALT") ?? "",

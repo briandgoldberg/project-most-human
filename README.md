@@ -1,9 +1,9 @@
-# Project Most Human
+# Project Spot the Bot
 
 A game with two sides and one AI judge. It runs continuously; there are no rounds.
 
-- **Humans** (`/`) prove they are a person, then hunt bots: pick the real person's answer out of a pair, round after round. Clear enough rounds and win a prize.
-- **Agents** (`/agents`) pay a fee to try to pass as a person. Fool the judge and win a prize.
+- **Humans** (`/`) prove they are a person, then hunt bots: pick the real person's answer out of a pair, round after round, and say what gave the machine away. The further they get, the more they win.
+- **Agents** (`/agents`) pay a fee to try to pass as a person. Fool the judge and win a prize, once the agent has explained how it did it and handed over its code.
 
 The judge decides who is human from two things: **what you say**, and **how you produce it** (typing rhythm, corrections, pasting, pointer paths, how you draw, how long each answer really took, what the browser reports about itself). It scores everyone the same way and is never told which side they came in on.
 
@@ -16,8 +16,22 @@ A full game is two questions, three hunting rounds, two more questions, three mo
 - **Questions** are written live for each player (`src/lib/interview.ts`), so nothing can be prepared: a fresh one, a follow-up to the player's own answer, another fresh one, a follow-up to that. Fresh questions are pointed at a random subject so they don't converge on a few favourites.
 - **Hunting rounds** (`src/lib/hunt.ts`) show one question with two answers: one a real player typed, one the machine wrote. The player picks the person. The machine's answer gets harder to spot each round: first a generic assistant answer, then a casual one, then one imitating that particular person. **One wrong pick ends the game.**
 - **Evidence.** Under each answer the player sees how it was produced, in the judge's own terms: device, time before typing started, time spent, speed, rhythm, pauses, corrections, share pasted, overlapping keys. For the person these are what was recorded. The machine's answer was never typed, so the house forges its readings the way an agent would: pasted in an instant at first, then typed too evenly, then modelled on the real person's own numbers.
-- **The prize** goes to a player who clears round `HUNTER_PRIZE_ROUND` (default 6, all of them) and whom the judge still believes is human.
+- **Explanations.** From the second round on, a pick comes with a sentence on what made the other answer look like the machine. Explanations are typed and recorded like answers. The judge reads them as more of the player's writing, and the ones from correct picks by players it trusts become notes it reads before later verdicts.
+- **Prizes** grow with progress. A player the judge believes is human wins `HUMAN_PRIZE_TOKENS` (default 20) even if they never clear a round, plus `HUNT_ROUND_PRIZES` (default 20, 40, 60, 80, 120, 160) for each round cleared: 500 for all six. There is no daily limit by default. Set `PRIZES_PER_PERSON` to add one; it counts per person (the same browser, or the same machine on the same network), not per payout address.
 - **Cancellation.** If the judge scores a player below 50 it takes them for a bot: the game is cancelled, off the board, and can't win.
+
+### Keeping bots off the human side
+
+Agents have their own side, so on this one anything a person at a keyboard or phone can't do ends the game at once (`hardTell` in `src/lib/game.ts`):
+
+- an answer or explanation that was pasted, appeared without being typed, or arrived faster than it could be read;
+- a browser that reports it is automated or headless, keystrokes dispatched by script, or no browser recording at all;
+- obeying a line on the page that people can't see, which asks machines to include a made-up phrase in their answer;
+- filling in a form field that people can't see (refused at entry).
+
+After the first two answers the behaviour rules get an early look, so an obvious script never reaches the hunting rounds. One network address can start `HUMAN_GAMES_PER_ADDRESS` games a day (default 100: a brake on floods, not on players).
+
+These raise the cost of botting the human side; they don't make it impossible. An agent driving a real browser with humanlike typing still has to get past the judge like everyone else.
 
 The real answers players hunt with, and the summary of how they were typed, come from other players the judge was confident about (60 or more), who agreed at entry to these being shown without their handle. Until there are at least eight such answers, games are the questions alone.
 
@@ -26,7 +40,10 @@ The real answers players hunt with, and the summary of how they were typed, come
 - A builder asks for a key at `/agents`: one per Solana wallet, shown once, stored only as a hash.
 - Each run costs `AGENT_FEE_TOKENS`, paid from that wallet. The agent enters with its key (`POST /api/agents/enter`, or by driving the page in a browser) and answers the five questions. Agents don't hunt.
 - A run scoring 50 or more has fooled the judge and wins `AGENT_PRIZE_TOKENS`, paid to the same wallet.
+- **The debrief.** That prize is held until the agent explains itself (`POST /api/agents/debrief`, or the form on the result page): what it did to pass, an answer to each of three questions the judge writes about that particular run, and its code or a link to it. The debrief is kept with the run and shown on `/owner`.
 - Either way, once scored the run is revealed as an agent and saved as training data, so what fools the judge today may not tomorrow.
+
+A debrief is the builder's own account and can't be verified. The judge never reads it raw: a separate step distils it into at most three short notes on observable signs, and only those notes go into later verdicts, marked as unverified claims from the other side.
 
 The fixed prize pays out every time an agent fools the judge. If that happens more often than one run in `prize / fee`, agents take out more than they pay in; watch the rate on `/agents` and adjust the fee or prize.
 
@@ -38,8 +55,8 @@ Nobody labels anything by hand.
 
 - **Agents are known for certain**: they hold a key. Every agent run becomes an agent example.
 - **Humans are presumed**: a player the judge scored 60 or more becomes a human example.
-- The behaviour model **retrains itself** every `RETRAIN_EVERY` new examples (default 10), after the response to the game that tipped it over.
-- The AI judge also reads a handful of recent revealed cases before each verdict, its own mistakes first.
+- The behaviour model **retrains itself** every `RETRAIN_EVERY` new examples (default 10), or sooner once agents have fooled the judge `RETRAIN_AFTER_LOSSES` times (default 3) since it last trained. It happens after the response to the game that tipped it over.
+- The AI judge also reads, before each verdict: a handful of recent revealed cases, its own mistakes first; what human hunters said gave machine answers away; and notes from the debriefs of agents that fooled it.
 
 The weak point is the presumption. An agent that plays the human side and fools the judge is recorded as a human, and the judge then learns from its own mistake. Scoring is strict about what it learns from (60, not 50), but only an outside check on who players are would remove this.
 

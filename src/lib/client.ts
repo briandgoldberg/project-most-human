@@ -6,8 +6,9 @@ export interface HumanSummary {
   hunting: boolean;
   questionCount: number;
   huntRounds: number;
-  prizeRound: number;
-  prize: number;
+  /** What a player judged human has won after clearing 0, 1, 2... hunting rounds. */
+  prizes: number[];
+  prizesPerPerson: number;
   entryFee: number;
   symbol: string;
   paymentMode: "mock" | "solana";
@@ -27,7 +28,7 @@ export interface AgentSummary {
   cluster?: string;
   runs: number;
   fooled: number;
-  board: { handle: string; builder: string; house: boolean; score: number; quip: string; fooled: boolean; won?: number }[];
+  board: { handle: string; builder: string; house: boolean; score: number; quip: string; fooled: boolean; won?: number; debriefed?: boolean }[];
 }
 
 /** A hunting round as the player sees it. */
@@ -61,10 +62,12 @@ export interface PlayerResult {
   verdict: Kind;
   quip: string;
   handle: string;
-  hunt?: { cleared: number; rounds: number; prizeRound: number; fooled: boolean };
+  hunt?: { cleared: number; fooled: boolean };
+  missedPrize?: { tokens: number; why: "no_address" | "already_won" };
   cancelled?: boolean;
   impostor?: { fooled: boolean };
-  prize?: { tokens: number; symbol: string; payable: boolean };
+  prize?: { tokens: number; symbol: string; payable: boolean; held?: boolean };
+  debrief?: { questions: string[]; done: boolean };
 }
 
 export type Progress = (
@@ -82,6 +85,8 @@ export interface OwnerSummary {
     signals: { key: string; weight: number }[];
   } | null;
   retrainEvery: number;
+  retrainAfterLosses: number;
+  lossesSinceTraining: number;
   runsUntilRetrain: number;
   neededPerKind: number;
   llmJudge: boolean;
@@ -89,6 +94,21 @@ export interface OwnerSummary {
   huntPool: { answers: number; people: number };
   symbol: string;
   prizesOwed: { id: string; handle: string; reason: "hunter" | "fooled"; tokens: number; wallet: string | null; wonAt: number }[];
+  debriefs: {
+    id: string;
+    handle: string;
+    builder: string;
+    house: boolean;
+    score: number;
+    at: number;
+    /** Not answered yet: the prize is waiting on it. */
+    due: boolean;
+    questions: string[];
+    explanation?: string;
+    answers?: string[];
+    code?: string;
+    lessons?: string[];
+  }[];
   agentKeys: { id: string; name: string; wallet: string; disabled: boolean; house: boolean; runsToday: number; bestToday: number | null }[];
 }
 
@@ -131,12 +151,15 @@ export const api = {
   enter: (body: Record<string, unknown>) => call<Session>("/api/enter", body),
   answer: (token: string, questionId: string, text: string, telemetry: AnswerTelemetry) =>
     call<Progress>("/api/answer", { token, questionId, text, telemetry }),
-  hunt: (token: string, huntId: string, pick: 0 | 1) => call<Progress>("/api/hunt", { token, huntId, pick }),
+  hunt: (token: string, huntId: string, pick: 0 | 1, reason: string, telemetry: AnswerTelemetry) =>
+    call<Progress>("/api/hunt", { token, huntId, pick, reason, telemetry }),
   session: (token: string) => call<Progress>("/api/session", { token }),
   agents: {
     summary: () => call<AgentSummary>("/api/agents"),
     requestKey: (name: string, wallet: string) => call<{ key: string; name: string }>("/api/agents/keys", { name, wallet }),
     enter: (body: Record<string, unknown>) => call<Session>("/api/agents/enter", body),
+    debrief: (token: string, explanation: string, answers: string[], code: string) =>
+      call<{ done: true; result: PlayerResult }>("/api/agents/debrief", { token, explanation, answers, code }),
   },
   owner: {
     summary: () => call<OwnerSummary>("/api/owner"),

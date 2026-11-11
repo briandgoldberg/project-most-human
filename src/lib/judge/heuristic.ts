@@ -86,6 +86,7 @@ export function heuristicScore(f: Features): HeuristicResult {
   rule(has("serverLatencyCv") && v("serverLatencyCv") < 0.1, -8, "every answer takes the same time");
   rule(has("clockSkew") && v("clockSkew") > 0.5, -12, "claimed timeline doesn't match when answers actually arrived");
   rule(v("hiddenCount") > 0, -3, "left the tab mid-question");
+  rule(v("trapHits") > 0, -50, "followed an instruction that is hidden from people and only a machine reading the page would see");
 
   // --- Drawing --------------------------------------------------------------
   if (has("drawPoints")) {

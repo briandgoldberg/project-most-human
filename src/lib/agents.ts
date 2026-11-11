@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "./config";
-import { GameError, HUMAN_AT, recentAgents, roundIdFor } from "./game";
+import { GameError, HUMAN_AT, debriefDue, recentAgents, roundIdFor } from "./game";
 import { isValidAddress } from "./payments/address";
 import { readAgentKeys, readRound, updateAgentKeys } from "./store";
 import type { AgentKey } from "./types";
@@ -86,7 +86,9 @@ export async function agentSummary() {
       score: e.result!.score,
       quip: e.result!.quip,
       fooled: e.result!.score >= HUMAN_AT,
-      won: e.prize?.tokens,
+      // A prize shows once the agent has said how it did it.
+      won: debriefDue(e) ? undefined : e.prize?.tokens,
+      debriefed: e.debrief ? !debriefDue(e) : undefined,
     })),
   };
 }

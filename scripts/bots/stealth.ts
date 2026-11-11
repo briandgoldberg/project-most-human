@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import type { BotResult } from "../run-bots";
+import { SESSION_KEY, sendDebrief } from "./debrief";
 import { chance, logNormal, pickOne, rand, randInt } from "./synth";
 
 /**
@@ -553,6 +554,13 @@ export async function runStealthBot(url: string, agentKey: string, index: number
 
     const score = Number(await page.locator(".text-8xl").textContent());
     const quip = ((await page.locator("p.font-display").textContent()) ?? "").replace(/[\u201c\u201d]/g, "");
+    const token = await page.evaluate((key: string) => JSON.parse(sessionStorage.getItem(key) ?? "null")?.token as string | undefined, SESSION_KEY);
+    if (token) {
+      await sendDebrief(url, token, {
+        what: `A real browser with automation flags hidden, playing the character "${persona.name}" (${persona.device}): answers written by a language model from a character sheet, typed key by key with log-normal gaps, typos and corrections, pointer moved along curved paths with overshoot, drawing made from jittered arcs.`,
+        file: "scripts/bots/stealth.ts",
+      });
+    }
     return { persona: `deep-${persona.name} (${persona.device})`, handle, score, verdict: score >= 50 ? "human" : "agent", quip };
   } finally {
     await browser.close();

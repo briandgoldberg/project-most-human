@@ -301,14 +301,18 @@ export interface HuntRecord {
   correct: boolean;
   /** How long the hunter took to decide. */
   ms: number;
+  /** What the hunter said gave the machine away. */
+  reason?: string;
 }
 
 export async function appendHuntRecord(record: HuntRecord): Promise<void> {
   await withLock("hunts", () => backend().append(`hunts/${record.roundId}`, record));
 }
 
-export async function readHuntRecords(): Promise<HuntRecord[]> {
-  return backend().readLog<HuntRecord>("hunts/", "hunts/~");
+/** Hunting picks, oldest first. `days` limits it to the last so many days. */
+export async function readHuntRecords(days?: number): Promise<HuntRecord[]> {
+  const from = days ? new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10) : "";
+  return backend().readLog<HuntRecord>(`hunts/${from}`, "hunts/~");
 }
 
 // ---------------------------------------------------------------------------

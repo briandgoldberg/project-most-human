@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { Connection, Keypair, Transaction } from "@solana/web3.js";
 import type { Kind, Question } from "../src/lib/types";
 import { runBrowserBot } from "./bots/browser";
+import { sendDebrief } from "./bots/debrief";
 import { PERSONAS, type Persona } from "./bots/personas";
 import { STEALTH_PERSONAS, runStealthBot } from "./bots/stealth";
 import { rand } from "./bots/synth";
@@ -108,7 +109,7 @@ async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
     if (step.hunt) {
       // A bot on the human side has to hunt too. This one guesses.
       await sleep(args.fast ? 100 : rand(2500, 7000));
-      res = await post("/api/hunt", { token, huntId: step.hunt.id, pick: Math.random() < 0.5 ? 0 : 1 }, ua);
+      res = await post("/api/hunt", { token, huntId: step.hunt.id, pick: Math.random() < 0.5 ? 0 : 1, reason: "the other one read more naturally to me" }, ua);
     } else {
       const question = step.question!;
       const text = await answerText(question, persona.voice, args.llm!);
@@ -121,7 +122,9 @@ async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
     if (res.status !== 200) throw new Error(`${handle}: move rejected: ${res.json.message}`);
     if (res.json.done) {
       const r = res.json.result as { score: number; verdict: Kind; quip: string; prize?: { tokens: number }; cancelled?: boolean };
-      const note = r.prize ? ` [won ${r.prize.tokens}]` : r.cancelled ? " [cancelled]" : "";
+      // An agent that fooled the judge owes it an account of how.
+      const debriefed = !args.human && (await sendDebrief(args.url!, token, { what: `Persona "${persona.name}": ${persona.about}`, file: "scripts/bots/personas.ts" }));
+      const note = (r.prize ? ` [won ${r.prize.tokens}]` : r.cancelled ? " [cancelled]" : "") + (debriefed ? " [debriefed]" : "");
       return { persona: persona.name, handle, score: r.score, verdict: r.verdict, quip: r.quip + note };
     }
     step = res.json as typeof step;

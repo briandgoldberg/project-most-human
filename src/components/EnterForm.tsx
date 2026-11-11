@@ -13,6 +13,8 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
   const router = useRouter();
   const [handle, setHandle] = useState("");
   const [wallet, setWallet] = useState("");
+  // Not shown to people. A script filling in every field fills this one too.
+  const [website, setWebsite] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A fee that has been sent but not yet confirmed. Retrying re-checks it instead of charging again.
@@ -41,7 +43,7 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
     if (busy) return;
     setError(null);
     try {
-      const session = await enterPaying(api.enter, { handle, wallet: wallet.trim() || undefined }, sent, (stage, sentNow) => {
+      const session = await enterPaying(api.enter, { handle, wallet: wallet.trim() || undefined, website: website || undefined }, sent, (stage, sentNow) => {
         setBusy(stage);
         if (sentNow) setSent(sentNow);
       });
@@ -71,10 +73,15 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
         />
       </div>
 
+      <div aria-hidden className="absolute -left-[9999px] h-0 w-0 overflow-hidden">
+        <label htmlFor="website">Website</label>
+        <input id="website" name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
+      </div>
+
       {onChain && (
         <div>
           <label htmlFor="wallet" className={label}>
-            Solana address {hasFee ? "" : "for your prize (optional)"}
+            Solana address {hasFee ? "" : "for your prizes"}
           </label>
           <div className="flex gap-2">
             <input
@@ -82,7 +89,7 @@ export function EnterForm({ summary }: { summary: HumanSummary }) {
               className={field}
               value={wallet}
               onChange={(e) => setWallet(e.target.value)}
-              placeholder={hasFee ? "connect a wallet to pay the fee" : "where to send it if you win"}
+              placeholder={hasFee ? "connect a wallet to pay the fee" : "without one, prizes can't be paid"}
               autoComplete="off"
               spellCheck={false}
               required={hasFee}

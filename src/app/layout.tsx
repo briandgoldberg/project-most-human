@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Most Human",
-  description: "A daily game. An AI asks you questions and decides how human you are. The most human player takes the pool.",
+  title: "Spot the Bot",
+  description: "Prove you're human, then pick the real person out of a pair. Or send an agent to pass as one.",
 };
 
 export const viewport: Viewport = {

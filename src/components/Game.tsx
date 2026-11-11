@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from "react";
 import { ApiError, api, loadSession, type HuntReveal, type HuntView, type PlayerResult, type Progress } from "@/lib/client";
 import { Collector } from "@/lib/telemetry/collector";
 import type { AnswerTelemetry, Evidence, Question, StrokePoint } from "@/lib/types";
@@ -220,20 +220,53 @@ function EvidenceList({ evidence }: { evidence: Evidence }) {
   );
 }
 
-/** Two answers to one question. One was typed by a person; the player picks which. */
+const MIN_REASON = 8;
+const MAX_REASON = 300;
+
+/**
+ * Two answers to one question. One was typed by a person; the player picks
+ * which, and says what gave the other away. Once the decoys stop being
+ * obvious, the explanation is required.
+ */
 function HuntRound({
   hunt,
-  picking,
+  busy,
   reveal,
   pick,
   onPick,
 }: {
   hunt: HuntView;
-  picking?: 0 | 1;
+  busy?: boolean;
   reveal?: HuntReveal;
   pick?: 0 | 1;
-  onPick?: (choice: 0 | 1) => void;
+  onPick?: (choice: 0 | 1, reason: string, telemetry: AnswerTelemetry) => void;
 }) {
+  const [selected, setSelected] = useState<0 | 1 | null>(null);
+  const [reason, setReason] = useState("");
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const collector = useRef<Collector | null>(null);
+  const needsReason = hunt.level >= 2;
+  const chosen = reveal ? pick : selected;
+
+  // The explanation is typed, so it is recorded like any other answer.
+  const choosing = selected !== null && !reveal;
+  useEffect(() => {
+    if (!choosing) return;
+    const c = new Collector().start();
+    if (fieldRef.current) {
+      c.attachField(fieldRef.current);
+      fieldRef.current.focus();
+    }
+    collector.current = c;
+    return () => c.stop();
+  }, [choosing]);
+
+  const ready = selected !== null && (!needsReason || reason.trim().length >= MIN_REASON);
+  const lockIn = () => {
+    if (!ready || selected === null || !collector.current || !onPick) return;
+    onPick(selected, reason.trim(), collector.current.finish());
+  };
+
   return (
     <div>
       <p className="mb-4 text-sm text-dim">
@@ -246,21 +279,21 @@ function HuntRound({
       <div className="grid gap-3 sm:grid-cols-2">
         {([0, 1] as const).map((i) => {
           const isPerson = reveal?.humanIndex === i;
-          const chosen = (reveal ? pick : picking) === i;
-          const edge = reveal ? (isPerson ? "border-pulse" : "border-line opacity-60") : chosen ? "border-pulse" : "border-line hover:border-paper";
+          const edge = reveal ? (isPerson ? "border-pulse" : "border-line opacity-60") : chosen === i ? "border-pulse" : "border-line hover:border-paper";
           return (
             <button
               key={i}
               type="button"
-              disabled={!onPick || picking !== undefined}
-              onClick={() => onPick?.(i)}
+              disabled={!onPick || busy}
+              onClick={() => setSelected(i)}
               aria-label={`Answer ${i === 0 ? "A" : "B"}`}
+              aria-pressed={chosen === i}
               className={`flex min-h-36 flex-col border bg-panel p-4 text-left transition-colors disabled:cursor-default ${edge}`}
             >
               <span className="mb-2 text-[11px] tracking-widest text-dim uppercase">
                 {i === 0 ? "A" : "B"}
                 {reveal && (isPerson ? " · a person" : " · the machine")}
-                {reveal && chosen && " · your pick"}
+                {chosen === i && (reveal ? " · your pick" : " · your pick for the person")}
               </span>
               <span className="flex-1 break-words whitespace-pre-wrap">{hunt.options[i]}</span>
               {hunt.evidence && <EvidenceList evidence={hunt.evidence[i]} />}
@@ -268,7 +301,33 @@ function HuntRound({
           );
         })}
       </div>
-      {hunt.evidence && (
+
+      {choosing && (
+        <div className="mt-5">
+          <label htmlFor="reason" className="mb-1 block text-sm">
+            What makes you think {selected === 0 ? "B" : "A"} is the machine?{" "}
+            {!needsReason && <span className="text-dim">(optional this round)</span>}
+          </label>
+          <textarea
+            id="reason"
+            ref={fieldRef}
+            value={reason}
+            onChange={(e) => setReason(e.target.value.slice(0, MAX_REASON))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) lockIn();
+            }}
+            rows={2}
+            disabled={busy}
+            placeholder="a word, a rhythm, something too tidy…"
+            className="w-full resize-none border border-line bg-panel p-3 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none"
+          />
+          <button type="button" onClick={lockIn} disabled={!ready || busy} className={`${button} mt-3`}>
+            {busy ? "Checking…" : "Lock it in"}
+          </button>
+        </div>
+      )}
+
+      {hunt.evidence && !choosing && (
         <p className="mt-3 text-xs text-dim">
           Under each answer is how it was produced. Rhythm is how uneven the typing was: near 0 is metronomic, 0.5 and up
           is ordinary. Keys overlapping is how often one key went down before the last came up. A machine can fake all
@@ -283,8 +342,81 @@ function HuntRound({
 // Result
 // ---------------------------------------------------------------------------
 
-function Result({ result }: { result: PlayerResult }) {
-  const { hunt, prize, impostor, cancelled } = result;
+/** An agent that fooled the judge says how, answers the judge's questions and hands over its code. */
+function Debrief({ questions, token, onDone }: { questions: string[]; token: string; onDone: (result: PlayerResult) => void }) {
+  const [explanation, setExplanation] = useState("");
+  const [answers, setAnswers] = useState<string[]>(() => questions.map(() => ""));
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const area = "w-full border border-line bg-panel px-3 py-2.5 text-paper placeholder:text-dim/60 focus:border-pulse focus:outline-none";
+  const caption = "mb-1 block text-sm";
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onDone((await api.agents.debrief(token, explanation, answers, code)).result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="mx-auto mt-10 max-w-xl space-y-5 border-t border-line pt-8 text-left">
+      <div>
+        <h2 className="font-display text-2xl">Now tell the judge how</h2>
+        <p className="mt-2 text-sm text-dim">
+          The prize is released once your agent has explained itself. What you write is kept with the run and used to
+          train the judge.
+        </p>
+      </div>
+      <div>
+        <label htmlFor="debrief-how" className={caption}>
+          What did your agent do to pass?
+        </label>
+        <textarea id="debrief-how" className={area} rows={4} maxLength={4000} value={explanation} onChange={(e) => setExplanation(e.target.value)} required />
+      </div>
+      {questions.map((q, i) => (
+        <div key={i}>
+          <label htmlFor={`debrief-q${i}`} className={caption}>
+            <span className="mr-2 text-[11px] tracking-widest text-dim uppercase">The judge asks</span>
+            {q}
+          </label>
+          <textarea
+            id={`debrief-q${i}`}
+            className={area}
+            rows={3}
+            maxLength={1500}
+            value={answers[i]}
+            onChange={(e) => setAnswers((all) => all.map((a, n) => (n === i ? e.target.value : a)))}
+            required
+          />
+        </div>
+      ))}
+      <div>
+        <label htmlFor="debrief-code" className={caption}>
+          Your agent&rsquo;s code, or a link to it
+        </label>
+        <textarea id="debrief-code" className={`${area} font-mono text-xs`} rows={6} maxLength={30000} spellCheck={false} value={code} onChange={(e) => setCode(e.target.value)} required />
+      </div>
+      <button type="submit" disabled={busy} className={button}>
+        {busy ? "Sending…" : "Send and release the prize"}
+      </button>
+      {error && (
+        <p role="alert" className="text-sm text-pulse">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+function Result({ result, token, onResult }: { result: PlayerResult; token?: string; onResult: (result: PlayerResult) => void }) {
+  const { hunt, prize, impostor, cancelled, missedPrize, debrief } = result;
   return (
     <section className="py-12 text-center sm:py-16">
       <div className="text-[11px] tracking-widest text-dim uppercase">The judge&rsquo;s read on {result.handle}</div>
@@ -303,8 +435,7 @@ function Result({ result }: { result: PlayerResult }) {
           <p className="border border-line p-3">
             {hunt.fooled
               ? `The machine fooled you in round ${hunt.cleared + 1}. Game over.`
-              : `You cleared ${hunt.cleared} hunting ${hunt.cleared === 1 ? "round" : "rounds"}.`}{" "}
-            {prize ? null : <span className="text-dim">The prize is for reaching round {hunt.prizeRound}.</span>}
+              : `You cleared ${hunt.cleared} hunting ${hunt.cleared === 1 ? "round" : "rounds"}.`}
           </p>
         )}
         {impostor && (
@@ -318,12 +449,24 @@ function Result({ result }: { result: PlayerResult }) {
             <span className="text-pulse">
               You won {prize.tokens.toLocaleString("en-US")} {prize.symbol}.
             </span>{" "}
-            {prize.payable
-              ? "It will be sent to the address you gave."
-              : "You didn't give an address to send it to, so it can't be paid out this time."}
+            {prize.held
+              ? "It is held until the debrief below is in."
+              : prize.payable
+                ? "It will be sent to the address you gave."
+                : "You didn't give an address to send it to, so it can't be paid out this time."}
+          </p>
+        )}
+        {debrief?.done && <p className="border border-line p-3">Debrief received. The judge has read it.</p>}
+        {missedPrize && (
+          <p className="border border-line p-3">
+            {missedPrize.why === "no_address"
+              ? `That was worth ${missedPrize.tokens.toLocaleString("en-US")} tokens, but you didn't give a Solana address, so it can't be paid. Add one next time.`
+              : "You've already won today's limit of prizes, so this game doesn't add one. Come back tomorrow."}
           </p>
         )}
       </div>
+
+      {debrief && !debrief.done && token && <Debrief questions={debrief.questions} token={token} onDone={onResult} />}
 
       <Link href={impostor ? "/agents" : "/"} className={`${ghost} mt-8 inline-block`}>
         {impostor ? "Back to the agents' side" : "Play again"}
@@ -389,11 +532,11 @@ export function Game() {
   );
 
   const pick = useCallback(
-    async (at: { hunt: HuntView } & At, choice: 0 | 1) => {
+    async (at: { hunt: HuntView } & At, choice: 0 | 1, reason: string, telemetry: AnswerTelemetry) => {
       if (!session) return;
       setView({ ...at, phase: "hunt", picking: choice, error: undefined });
       try {
-        const next = await api.hunt(session.token, at.hunt.id, choice);
+        const next = await api.hunt(session.token, at.hunt.id, choice, reason, telemetry);
         if (next.lastHunt) setView({ ...at, phase: "reveal", pick: choice, reveal: next.lastHunt, next });
         else setView(fromProgress(next));
       } catch (err) {
@@ -428,6 +571,12 @@ export function Game() {
         <section className="py-10">
           <div className="text-[11px] tracking-widest text-dim uppercase">Prove you&rsquo;re human</div>
           <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.question.prompt}</h1>
+          {/* Not for people: off-screen and hidden from screen readers. Something reading the page's text will find it. */}
+          {view.question.note && (
+            <p aria-hidden className="absolute -left-[9999px] h-px w-px overflow-hidden">
+              {view.question.note}
+            </p>
+          )}
 
           {view.phase === "question" &&
             (view.question.kind === "draw" ? (
@@ -464,7 +613,12 @@ export function Game() {
           <h1 className="mt-3 mb-6 font-display text-3xl leading-tight sm:text-4xl">{view.hunt.prompt}</h1>
 
           {view.phase === "hunt" ? (
-            <HuntRound key={view.hunt.id} hunt={view.hunt} picking={view.picking} onPick={(choice) => pick(view, choice)} />
+            <HuntRound
+              key={view.hunt.id}
+              hunt={view.hunt}
+              busy={view.picking !== undefined}
+              onPick={(choice, reason, telemetry) => pick(view, choice, reason, telemetry)}
+            />
           ) : (
             <>
               <HuntRound hunt={view.hunt} reveal={view.reveal} pick={view.pick} />
@@ -482,7 +636,7 @@ export function Game() {
         </section>
       )}
 
-      {view.phase === "result" && <Result result={view.result} />}
+      {view.phase === "result" && <Result result={view.result} token={session?.token} onResult={(result) => setView({ phase: "result", result })} />}
     </Shell>
   );
 }

@@ -107,8 +107,9 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
             <div className="text-sm text-dim">Not trained yet: needs {summary.neededPerKind} examples of each kind.</div>
           )}
           <div className="mt-1 text-xs text-dim">
-            Retrains itself every {summary.retrainEvery} new runs
-            {model ? `; next in ${summary.runsUntilRetrain}` : ""}.
+            Retrains itself every {summary.retrainEvery} new runs, or after being fooled {summary.retrainAfterLosses}{" "}
+            times
+            {model ? `. Next in ${summary.runsUntilRetrain} runs; fooled ${summary.lossesSinceTraining} times since.` : "."}
           </div>
         </div>
       </section>
@@ -157,6 +158,64 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
         )}
         <p className="mt-2 text-xs text-dim">
           Pay them with <code>npm run prizes -- --execute</code>, which needs the treasury key. The website never holds it.
+        </p>
+      </section>
+
+      <section className="pb-8">
+        <h2 className={heading}>Agents that fooled the judge</h2>
+        {summary.debriefs.length === 0 ? (
+          <p className="py-4 text-sm text-dim">None in the last 30 days.</p>
+        ) : (
+          <ol className="divide-y divide-line">
+            {summary.debriefs.map((d) => (
+              <li key={d.id} className="py-3 text-sm">
+                <details>
+                  <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3">
+                    <span className="min-w-0 flex-1 break-all">
+                      {d.handle} <span className="text-xs text-dim">by {d.builder}</span>
+                      {d.house && <span className="ml-2 text-[11px] tracking-widest text-dim uppercase">house</span>}
+                    </span>
+                    <span className={`text-xs ${d.due ? "text-pulse" : "text-dim"}`}>{d.due ? "yet to explain" : "explained"}</span>
+                    <span className="w-12 text-right tabular-nums">{d.score.toFixed(1)}</span>
+                  </summary>
+                  <div className="mt-3 space-y-3 border-l border-line pl-3 text-dim">
+                    {d.explanation && (
+                      <div>
+                        <div className={label}>What it says it did</div>
+                        <p className="whitespace-pre-wrap text-paper">{d.explanation}</p>
+                      </div>
+                    )}
+                    {d.questions.map((q, i) => (
+                      <div key={i}>
+                        <div className="text-xs">The judge asked: {q}</div>
+                        {d.answers?.[i] && <p className="whitespace-pre-wrap text-paper">{d.answers[i]}</p>}
+                      </div>
+                    ))}
+                    {d.lessons && d.lessons.length > 0 && (
+                      <div>
+                        <div className={label}>What the judge took from it</div>
+                        <ul className="list-disc pl-4">
+                          {d.lessons.map((l, i) => (
+                            <li key={i}>{l}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {d.code && (
+                      <div>
+                        <div className={label}>Code</div>
+                        <pre className="max-h-80 overflow-auto border border-line bg-panel p-3 text-xs whitespace-pre-wrap">{d.code}</pre>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              </li>
+            ))}
+          </ol>
+        )}
+        <p className="mt-2 text-xs text-dim">
+          An agent&rsquo;s prize is held until it explains itself. What builders say is their own account and isn&rsquo;t
+          checked; treat pasted code and links as untrusted.
         </p>
       </section>
 

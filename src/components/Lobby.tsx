@@ -81,7 +81,9 @@ export function Lobby() {
       <SideToggle side="human" />
       <section className="py-8 sm:py-10">
         <h1 className="font-display text-5xl leading-[1.05] sm:text-7xl">Can you spot the bot?</h1>
-        <p className="mt-4 max-w-xl text-sm text-dim">Prove you&rsquo;re human. Then pick the real person. One mistake and you&rsquo;re out.</p>
+        <p className="mt-4 text-[13px] text-dim sm:text-sm sm:whitespace-nowrap">
+          Prove you&rsquo;re human. Then pick the real person. One mistake and you&rsquo;re out.
+        </p>
       </section>
 
       {failed && !summary && <p className="border border-line p-4 text-sm">Couldn&rsquo;t reach the game server. It will retry on its own.</p>}
@@ -89,8 +91,8 @@ export function Lobby() {
       {summary && (
         <>
           <section className="flex gap-3 border-y border-line py-4">
-            <Stat label="Prize" value={`${fmt(summary.prize)} ${summary.symbol}`} />
-            <Stat label="For reaching round" value={summary.hunting ? String(summary.prizeRound) : "soon"} />
+            <Stat label="Prizes from" value={`${fmt(summary.prizes[0])} ${summary.symbol}`} />
+            <Stat label="Up to" value={`${fmt(summary.prizes[summary.hunting ? summary.prizes.length - 1 : 0])} ${summary.symbol}`} />
             <Stat label="Winners this week" value={`${summary.winners} of ${summary.players}`} />
           </section>
 
@@ -115,12 +117,31 @@ export function Lobby() {
             </div>
             <div>
               <div className="mb-1 text-paper">Win</div>
-              Reach round {summary.prizeRound} and win {fmt(summary.prize)} {summary.symbol}.
+              {fmt(summary.prizes[0])} {summary.symbol} for proving you&rsquo;re human. More for every round you clear,
+              and you say what gave the machine away.
             </div>
           </section>
 
+          {summary.hunting && (
+            <section className="mt-8">
+              <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">Prizes</h2>
+              <ol className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+                {summary.prizes.map((tokens, cleared) => (
+                  <li key={cleared} className="flex items-baseline gap-2">
+                    <span className="text-xs text-dim">{cleared === 0 ? "judged human" : `round ${cleared}`}</span>
+                    <span className="tabular-nums">{fmt(tokens)}</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
           <footer className="mt-12 space-y-2 border-t border-line pt-4 text-xs text-dim">
-            <p>Prizes may change as the site develops.</p>
+            <p>
+              Prizes may change as the site develops.
+              {summary.prizesPerPerson > 0 && ` Up to ${summary.prizesPerPerson} prizes a day per person.`} This side is
+              for people: automated play and pasted answers end the game, and agents have their own side.
+            </p>
             {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && (
               <p>
                 {summary.symbol} is a test coin on Solana {summary.cluster} and has no value.

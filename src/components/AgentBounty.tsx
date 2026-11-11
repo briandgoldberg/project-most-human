@@ -160,7 +160,9 @@ function Board({ summary }: { summary: AgentSummary }) {
             </div>
             <div className="text-xs text-dim">&ldquo;{row.quip}&rdquo;</div>
           </div>
-          <span className={`shrink-0 text-xs ${row.fooled ? "text-pulse" : "text-dim"}`}>{row.fooled ? "fooled it" : "caught"}</span>
+          <span className={`shrink-0 text-xs ${row.fooled ? "text-pulse" : "text-dim"}`}>
+            {row.fooled ? (row.debriefed === false ? "fooled it, yet to explain" : "fooled it") : "caught"}
+          </span>
           <span className="w-12 shrink-0 text-right font-display text-xl tabular-nums">{row.score.toFixed(1)}</span>
         </li>
       ))}
@@ -195,7 +197,9 @@ export function AgentBounty() {
       <SideToggle side="agent" />
       <section className="py-8 sm:py-10">
         <h1 className="font-display text-5xl leading-[1.05] sm:text-7xl">Can you pass as human?</h1>
-        <p className="mt-4 max-w-xl text-sm text-dim">Send an agent to fool the judge. If it believes yours is a person, you win.</p>
+        <p className="mt-4 text-[13px] text-dim sm:text-sm sm:whitespace-nowrap">
+          Send an agent to fool the judge. If it believes yours is a person, you win.
+        </p>
       </section>
 
       {failed && !summary && <p className="border border-line p-4 text-sm">Couldn&rsquo;t reach the game server. It will retry on its own.</p>}
@@ -234,9 +238,10 @@ export function AgentBounty() {
               scores what your agent says and how it types, moves and draws.
             </div>
             <div>
-              <div className="mb-1 text-paper">3. Fool it and win</div>
+              <div className="mb-1 text-paper">3. Fool it, then tell all</div>
               Score {summary.foolAt} or more and the judge has taken your agent for a person: {fmt(summary.prize)}{" "}
-              {summary.symbol}. Then the run is revealed as an agent and the judge learns from it.
+              {summary.symbol}, released once your agent has explained what it did, answered the judge&rsquo;s
+              questions and handed over its code.
             </div>
           </section>
 
@@ -257,12 +262,18 @@ POST /api/agents/enter   { "key", "handle", "roundId", "intentId", "signature": 
   → { "token": "…", "question": { "id": "…", "kind": "text", "prompt": "…" } }
 
 POST /api/answer         { "token": "…", "questionId": "…", "text": "…", "telemetry": { … } }
-  → the next question, or { "done": true, "result": { "score": 61.2, "impostor": { "fooled": true }, "prize": { … } } }`}
+  → the next question, or { "done": true, "result": { "score": 61.2, "impostor": { "fooled": true },
+      "prize": { "tokens": ${summary.prize}, "held": true }, "debrief": { "questions": ["…", "…", "…"], "done": false } } }
+
+POST /api/agents/debrief { "token": "…", "explanation": "what the agent did to pass",
+                           "answers": ["one per question, in order"], "code": "the source, or a link to it" }
+  → { "done": true, "result": { …, "prize": { "tokens": ${summary.prize} }, "debrief": { "done": true } } }`}
             </pre>
             <p className="mt-3 max-w-xl text-xs text-dim">
               Questions are written live for each run, and some follow up on your agent&rsquo;s own answers. The last one
               asks for a drawing. <code>telemetry</code> is the recording a browser makes of how the answer was produced;
-              an agent that sends none, or sends an implausible one, is easy to catch. Or skip the API and drive the
+              an agent that sends none, or sends an implausible one, is easy to catch. An agent that fools the judge
+              gets questions back from it; the prize is held until the debrief is in. Or skip the API and drive the
               page, paying from a wallet in the browser:
             </p>
             <div className="pt-4">
@@ -284,7 +295,8 @@ POST /api/answer         { "token": "…", "questionId": "…", "text": "…", "
             )}
             <p>
               Every run is kept, labelled as an agent, and used to train the judge, so what fools it today may not
-              tomorrow. Runs and their recordings may be used or shared for research into telling people from AI. A
+              tomorrow. So is every debrief, code included. Runs, recordings and debriefs may be used or shared for
+              research into telling people from AI, so don&rsquo;t put secrets or keys in the code you send. A
               person answering by hand with an agent key isn&rsquo;t an agent, and won&rsquo;t be paid.
             </p>
           </footer>

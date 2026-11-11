@@ -295,6 +295,7 @@ export const FEATURE_KEYS = [
   "hiddenCount",
   "webdriver",
   "headlessUa",
+  "trapHits",
   "drawPoints",
   "drawSpeedCv",
   "drawJitter",
@@ -311,6 +312,7 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number];
 export interface AnswerForAggregation {
   text: string;
   serverLatencyMs: number;
+  trapped?: boolean;
   features: AnswerFeatures;
 }
 
@@ -375,6 +377,7 @@ export function aggregateFeatures(answers: AnswerForAggregation[], env?: ClientE
     hiddenCount: sum((x) => x.hiddenCount, all),
     webdriver: env ? (env.webdriver ? 1 : 0) : null,
     headlessUa: /headless|phantomjs|puppeteer|playwright|python-requests|node-fetch|undici|curl\/|^node$/i.test(ua) ? 1 : 0,
+    trapHits: answers.filter((a) => a.trapped).length,
     drawPoints: draw.length ? sum((x) => x.drawPoints, draw.map((a) => a.features)) : null,
     drawSpeedCv: avg((x) => x.drawSpeedCv, draw.map((a) => a.features)),
     drawJitter: avg((x) => x.drawJitter, draw.map((a) => a.features)),

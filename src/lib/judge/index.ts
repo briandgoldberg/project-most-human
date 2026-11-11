@@ -1,8 +1,8 @@
 import { config } from "../config";
-import { readModelFile, readTraining, type TrainingRecord } from "../store";
+import { readHuntRecords, readModelFile, readTraining, type TrainingRecord } from "../store";
 import type { EntryAnswer, Features, JudgeResult, Kind, Question } from "../types";
 import { heuristicScore } from "./heuristic";
-import { llmJudge } from "./llm";
+import { llmDebriefLessons, llmDebriefQuestions, llmJudge, type DebriefQuestionsInput } from "./llm";
 import { predictHuman, type BehaviorModel } from "./model";
 
 const MAX_LESSONS = 6;
@@ -30,6 +30,59 @@ export function pickLessons(examples: TrainingRecord[], max = MAX_LESSONS): Trai
     picked.push(e);
   }
   return picked;
+}
+
+const MAX_HUNTER_NOTES = 10;
+
+/**
+ * Recent explanations from hunters who picked the person correctly against a
+ * decoy that wasn't obvious, and who were themselves taken to be human.
+ */
+export async function hunterNotes(humanEntryIds: Set<string>): Promise<string[]> {
+  const records = await readHuntRecords(3);
+  return records
+    .filter((r) => r.correct && r.level >= 2 && r.reason && r.reason.length >= 12 && humanEntryIds.has(r.hunterEntryId))
+    .slice(-MAX_HUNTER_NOTES)
+    .map((r) => r.reason!.slice(0, 200));
+}
+
+const MAX_AGENT_NOTES = 9;
+
+/** What agents that fooled the judge said about how, already distilled into short notes. Newest last. */
+export function agentNotes(examples: TrainingRecord[]): string[] {
+  return examples
+    .filter((e) => e.label === "agent")
+    .flatMap((e) => e.debrief?.lessons ?? [])
+    .slice(-MAX_AGENT_NOTES);
+}
+
+/** Asked when the judge's own questions can't be had: the AI judge is off, or failed. */
+export const STOCK_DEBRIEF_QUESTIONS = [
+  "What wrote your agent's answers: which model, with what instructions, and how did it come up with the personal details?",
+  "How were the typing, pointer and drawing recordings produced?",
+  "What do you think came closest to giving your agent away?",
+];
+
+/** The questions an agent that fooled the judge has to answer. Never fails: the stock ones stand in. */
+export async function debriefQuestions(input: DebriefQuestionsInput): Promise<string[]> {
+  if (!config().judge.llmEnabled) return STOCK_DEBRIEF_QUESTIONS;
+  try {
+    return await llmDebriefQuestions(input);
+  } catch (err) {
+    console.error("[debrief] the judge could not write its questions; using the stock ones:", err);
+    return STOCK_DEBRIEF_QUESTIONS;
+  }
+}
+
+/** Notes for the judge from an agent's account of itself. Empty when the AI judge is off or fails: raw text is never passed on. */
+export async function debriefLessons(input: { questions: string[]; explanation: string; answers: string[]; code: string }): Promise<string[]> {
+  if (!config().judge.llmEnabled) return [];
+  try {
+    return await llmDebriefLessons(input);
+  } catch (err) {
+    console.error("[debrief] could not distil a debrief into notes:", err);
+    return [];
+  }
 }
 
 function fallbackQuip(score: number): string {
@@ -79,13 +132,17 @@ export async function judgeEntry(
 
   if (opts.useLlm ?? cfg.judge.llmEnabled) {
     try {
-      const lessons = opts.lessons ?? pickLessons(await readTraining(3));
+      const recent = opts.lessons ? [] : await readTraining(14);
+      const lessons = opts.lessons ?? pickLessons(recent);
+      const notes = await hunterNotes(new Set(recent.filter((e) => e.label === "human").map((e) => e.entryId)));
       const verdict = await llmJudge({
         questions,
         answers: entry.answers,
         features,
         ruleHits: heuristic.reasons,
         lessons,
+        hunterNotes: notes,
+        agentNotes: agentNotes(recent),
       });
       llmScore = verdict.score;
       llmReasoning = verdict.reasoning;

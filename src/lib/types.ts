@@ -50,6 +50,9 @@ export interface Hunt {
   pick?: 0 | 1;
   correct?: boolean;
   answeredAt?: number;
+  /** The player's explanation of what gave the machine away, and how they typed it. */
+  reason?: string;
+  reasonFeatures?: AnswerFeatures;
 }
 
 export interface Question {
@@ -58,6 +61,14 @@ export interface Question {
   category: string;
   prompt: string;
   hint?: string;
+  /**
+   * A line addressed to machines, placed in the page where people can't see it.
+   * A person never reads it; an agent reading the page's text does, and one
+   * that obeys gives itself away.
+   */
+  note?: string;
+  /** The phrase the note asks for. Kept on the server; never sent on its own. */
+  canary?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +195,8 @@ export interface EntryAnswer {
   answeredAt: number;
   /** Server-observed time between serving the question and receiving the answer. */
   serverLatencyMs: number;
+  /** The answer contains the phrase only a machine was asked for. */
+  trapped?: boolean;
   features: AnswerFeatures;
 }
 
@@ -241,10 +254,24 @@ export interface Entry {
   hunts?: Hunt[];
   /** The judge took this player for a bot, so their game doesn't count: no board, no prize. */
   cancelled?: boolean;
+  /** What caused a cancellation, for the owner. Players are only told that it happened. */
+  cancelReason?: string;
+  /**
+   * One-way hashes of who is playing, used to limit games and prizes per
+   * person: the network address, a cookie set in the browser, and the make-up
+   * of the machine (screen, timezone, languages and so on).
+   */
+  addressHash?: string;
+  deviceHash?: string;
+  machineHash?: string;
   /** Made with the house's own agent key: never in line for a prize. */
   house?: boolean;
   /** What this entry won, if anything. */
   prize?: Prize;
+  /** What it would have won, had there been an address to pay or had that address not already won today. */
+  missedPrize?: { tokens: number; why: "no_address" | "already_won" };
+  /** Agents that fooled the judge: the questions put to them afterwards, and what they said. */
+  debrief?: Debrief;
   prizeEligible: boolean;
   status: "playing" | "scoring" | "scored";
   /** Which wording of the data notice this player was shown when they entered. */
@@ -281,9 +308,28 @@ export interface Payout {
   dryRun: boolean;
 }
 
+/**
+ * What an agent that fooled the judge owes afterwards: how it did it, answers
+ * to what the judge wants to know, and its code. Its prize waits on this.
+ */
+export interface Debrief {
+  /** What the judge asks about this run. */
+  questions: string[];
+  askedAt: number;
+  answeredAt?: number;
+  /** In the builder's or agent's own words: what it did to pass. */
+  explanation?: string;
+  /** One answer per question. */
+  answers?: string[];
+  /** The agent's code, or where to read it. */
+  code?: string;
+  /** Short notes for the judge on catching a run like this, distilled from the above. */
+  lessons?: string[];
+}
+
 export interface Prize {
   tokens: number;
-  /** "hunter": a player who reached the prize round. "fooled": an agent the judge took for human. */
+  /** "hunter": a player, for how far they got. "fooled": an agent the judge took for human. */
   reason: "hunter" | "fooled";
   wonAt: number;
   paid?: boolean;
@@ -339,6 +385,8 @@ export interface TrainingExample {
   /** What the judge said before the label was revealed. */
   judge: JudgeResult;
   judgeCorrect: boolean;
+  /** Agents that fooled the judge: what they said about how. */
+  debrief?: Debrief;
   /** Raw per-question telemetry, for retraining with new features later. */
   telemetry: Record<string, AnswerTelemetry>;
 }
