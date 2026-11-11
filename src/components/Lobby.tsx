@@ -257,23 +257,17 @@ export function Lobby() {
               .
             </p>
             <p>
-              Prizes may change as the site develops.
-              {summary.prizesPerPerson > 0 && ` Up to ${summary.prizesPerPerson} prizes a day per person.`}
+              Prizes may change.
+              {summary.prizesPerPerson > 0 && ` Up to ${summary.prizesPerPerson} a day per person.`}
+              {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && ` ${summary.symbol} is a test coin with no value.`}
             </p>
-            {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && (
-              <p>
-                {summary.symbol} is a test coin on Solana {summary.cluster} and has no value.
-              </p>
-            )}
             <p>
-              {summary.signIn.required &&
-                "Signing in with Google is only to tell one player from another: the game keeps a scrambled id for your account, not your name or email. "}
-              {summary.paymentMode === "solana" && "A Solana address you give to withdraw is kept with your account. "}
-              While you play, the game records your keystroke timing, edits, pointer movement, drawing strokes and
-              browser details, and the judge uses them along with your answers. By playing you agree these recordings
-              and your answers are kept; that your answers and a summary of how you typed them may be shown, without
-              your handle, to other players as part of the game; and that both may be used or shared for research into
-              telling people from AI. Don&rsquo;t share anything private.
+              By playing you agree that we record your answers and how you type, move and draw; that your answers and
+              how you typed them may be shown to other players without your name; and that all of it may be used or
+              shared for AI research.
+              {summary.signIn.required && " We keep a scrambled id for your Google account, not your name or email."}
+              {summary.paymentMode === "solana" && " A withdrawal address is kept with your account."} Don&rsquo;t
+              share anything private.
             </p>
           </footer>
         </>

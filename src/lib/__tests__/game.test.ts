@@ -228,7 +228,7 @@ test("players the judge is confident about become human examples, and their answ
   const examples = (await readTraining()).filter((e) => e.cohortId === "players" && !e.entryId.startsWith("seed-"));
   for (const handle of ["first ever", "fooled at three", "sharp eyes"]) assert.ok(examples.some((e) => e.handle === handle), handle);
   for (const e of examples) {
-    assert.deepEqual([e.label, e.source, e.consent, e.device], ["human", "auto", "v4", "desktop"]);
+    assert.deepEqual([e.label, e.source, e.consent, e.device], ["human", "auto", "v5", "desktop"]);
     assert.ok(e.judge.score >= 60);
   }
   // Hunters' explanations become notes for the judge, once the hunter is known to be human and was right.

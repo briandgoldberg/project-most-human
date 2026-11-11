@@ -52,7 +52,7 @@ const solana = () => import("./payments/solana");
  *   v2: recordings may be kept and used for research and datasets.
  *   v3: answers may also be shown, without a name, to other players.
  */
-export const CONSENT_VERSION = "v4";
+export const CONSENT_VERSION = "v5";
 
 /** At or above this the judge takes a player for a person; below it, for a bot. */
 export const HUMAN_AT = 50;

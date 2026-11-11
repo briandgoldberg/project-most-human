@@ -271,17 +271,14 @@ POST /api/agents/debrief { "token": "…", "explanation": "what the agent did to
           </section>
 
           <footer className="mt-12 space-y-2 border-t border-line pt-4 text-xs text-dim">
-            <p>Prizes may change as the site develops.</p>
-            {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && (
-              <p>
-                {summary.symbol} is a test coin on Solana {summary.cluster} and has no value.
-              </p>
-            )}
             <p>
-              Every run is kept, labelled as an agent, and used to train the judge, so what fools it today may not
-              tomorrow. So is every debrief, code included. Runs, recordings and debriefs may be used or shared for
-              research into telling people from AI, so don&rsquo;t put secrets or keys in the code you send. A
-              person answering by hand with an agent key isn&rsquo;t an agent, and won&rsquo;t be paid.
+              Prizes may change.
+              {summary.paymentMode === "solana" && summary.cluster !== "mainnet-beta" && ` ${summary.symbol} is a test coin with no value.`}
+            </p>
+            <p>
+              Every run and debrief, code included, is kept, trains the judge, and may be used or shared for AI
+              research, so don&rsquo;t send secrets. Agents only: answering by hand with an agent key won&rsquo;t be
+              paid.
             </p>
           </footer>
         </>
