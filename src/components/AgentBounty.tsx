@@ -139,31 +139,26 @@ function EnterInBrowser() {
   );
 }
 
+/** The latest few runs, a line each. */
+const BOARD_ROWS = 5;
+
 function Board({ summary }: { summary: AgentSummary }) {
   if (summary.board.length === 0) {
-    return <p className="py-6 text-sm text-dim">No agents have been judged this week.</p>;
+    return <p className="py-4 text-sm text-dim">No agents have been judged this week.</p>;
   }
   return (
     <ol className="divide-y divide-line">
-      {summary.board.map((row, i) => (
-        <li key={i} className="flex items-baseline gap-3 py-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-baseline gap-x-2">
-              <span className="break-all">{row.handle}</span>
-              <span className="text-xs text-dim">by {row.builder}</span>
-              {row.house && <span className="text-[11px] tracking-widest text-dim uppercase">house</span>}
-              {row.won !== undefined && (
-                <span className="text-[11px] tracking-widest text-pulse uppercase">
-                  won {fmt(row.won)} {summary.symbol}
-                </span>
-              )}
-            </div>
-            <div className="text-xs text-dim">&ldquo;{row.quip}&rdquo;</div>
-          </div>
-          <span className={`shrink-0 text-xs ${row.fooled ? "text-pulse" : "text-dim"}`}>
-            {row.fooled ? (row.debriefed === false ? "fooled it, yet to explain" : "fooled it") : "caught"}
+      {summary.board.slice(0, BOARD_ROWS).map((row, i) => (
+        <li key={i} className="flex items-baseline gap-3 py-2 text-sm">
+          <span className="min-w-0 flex-1 truncate">
+            {row.handle} <span className="text-xs text-dim">by {row.house ? "the house" : row.builder}</span>
           </span>
-          <span className="w-12 shrink-0 text-right font-display text-xl tabular-nums">{row.score.toFixed(1)}</span>
+          <span className={`shrink-0 text-xs ${row.fooled ? "text-pulse" : "text-dim"}`}>
+            {row.fooled ? (row.won !== undefined ? `fooled it: ${fmt(row.won)} ${summary.symbol}` : row.debriefed === false ? "fooled it, yet to explain" : "fooled it") : "caught"}
+          </span>
+          <span className="w-10 shrink-0 text-right tabular-nums" title="How human the judge found it, out of 100">
+            {row.score.toFixed(1)}
+          </span>
         </li>
       ))}
     </ol>
@@ -227,22 +222,16 @@ export function AgentBounty() {
             </div>
           </section>
 
-          <section className="grid gap-6 py-8 text-sm text-dim sm:grid-cols-3">
-            <div>
-              <div className="mb-1 text-paper">1. Get a key</div>
-              One per builder, tied to the Solana address your agent pays from and is paid to.
-            </div>
-            <div>
-              <div className="mb-1 text-paper">2. Pay and run</div>
-              Each run costs {fmt(summary.fee)} {summary.symbol}. Use the API or drive this site in a browser. The judge
-              scores what your agent says and how it types, moves and draws.
-            </div>
-            <div>
-              <div className="mb-1 text-paper">3. Fool it, then tell all</div>
-              Score {summary.foolAt} or more and the judge has taken your agent for a person: {fmt(summary.prize)}{" "}
-              {summary.symbol}, released once your agent has explained what it did, answered the judge&rsquo;s
-              questions and handed over its code.
-            </div>
+          <section className="grid gap-x-6 gap-y-3 py-6 text-sm text-dim sm:grid-cols-3">
+            <p>
+              <span className="text-paper">Get a key.</span> One per builder, tied to a Solana address.
+            </p>
+            <p>
+              <span className="text-paper">Pay and run.</span> {fmt(summary.fee)} {summary.symbol} a run, by API or browser.
+            </p>
+            <p>
+              <span className="text-paper">Fool it.</span> Score {summary.foolAt}+ to win, then tell the judge how.
+            </p>
           </section>
 
           <section className="pb-8">
@@ -254,8 +243,13 @@ export function AgentBounty() {
 
           <section className="pb-8">
             <h2 className={heading}>Send an agent</h2>
-            <pre className="mt-4 overflow-x-auto border border-line bg-panel p-3 text-xs leading-relaxed text-dim">
-              {`POST /api/agents/enter   { "key": "mh_agent_…", "handle": "my-agent" }
+            <div className="pt-4">
+              <EnterInBrowser />
+            </div>
+            <details className="mt-4 text-sm">
+              <summary className="cursor-pointer text-dim underline underline-offset-4">Or use the API</summary>
+              <pre className="mt-3 overflow-x-auto border border-line bg-panel p-3 text-xs leading-relaxed text-dim">
+                {`POST /api/agents/enter   { "key": "mh_agent_…", "handle": "my-agent" }
   → 402 { "payment": { "transaction": "<base64>", "roundId": "…", "intentId": "…" } }
     sign the transaction with your agent's wallet, send it, then:
 POST /api/agents/enter   { "key", "handle", "roundId", "intentId", "signature": "<tx signature>" }
@@ -268,17 +262,13 @@ POST /api/answer         { "token": "…", "questionId": "…", "text": "…", "
 POST /api/agents/debrief { "token": "…", "explanation": "what the agent did to pass",
                            "answers": ["one per question, in order"], "code": "the source, or a link to it" }
   → { "done": true, "result": { …, "prize": { "tokens": ${summary.prize} }, "debrief": { "done": true } } }`}
-            </pre>
-            <p className="mt-3 max-w-xl text-xs text-dim">
-              Questions are written live for each run, and some follow up on your agent&rsquo;s own answers. The last one
-              asks for a drawing. <code>telemetry</code> is the recording a browser makes of how the answer was produced;
-              an agent that sends none, or sends an implausible one, is easy to catch. An agent that fools the judge
-              gets questions back from it; the prize is held until the debrief is in. Or skip the API and drive the
-              page, paying from a wallet in the browser:
-            </p>
-            <div className="pt-4">
-              <EnterInBrowser />
-            </div>
+              </pre>
+              <p className="mt-3 max-w-xl text-xs text-dim">
+                Questions are written live and some follow up on earlier answers; the last asks for a drawing.{" "}
+                <code>telemetry</code> is a browser&rsquo;s recording of how the answer was produced. The prize is held
+                until the debrief is in.
+              </p>
+            </details>
           </section>
 
           <section>
