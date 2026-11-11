@@ -3,6 +3,8 @@ export type Kind = "human" | "agent";
 
 export type QuestionKind = "text" | "draw";
 
+export type Device = "phone" | "tablet" | "desktop";
+
 export interface Question {
   id: string;
   kind: QuestionKind;
@@ -155,6 +157,10 @@ export interface JudgeResult {
   reasons: string[];
   llmReasoning?: string;
   judgeModel?: string;
+  /** Which version of the judging logic produced this (see JUDGE_VERSION). */
+  judgeVersion?: string;
+  /** When the behaviour model in use was trained, if one was. */
+  behaviorModelTrainedAt?: number;
   scoredAt: number;
 }
 
@@ -176,6 +182,10 @@ export interface Entry {
   questions?: Question[];
   prizeEligible: boolean;
   status: "playing" | "scoring" | "scored";
+  /** Which wording of the data notice this player was shown when they entered. */
+  consent?: string;
+  /** What they played on, as far as the browser reports. */
+  device?: Device;
   /** Index of the question currently being answered. */
   progress: number;
   servedAt: number[];
@@ -226,6 +236,8 @@ export interface TrainingExample {
   /** "session" = played in the training room; "board" = a competition entry labelled afterwards. */
   source?: "session" | "board";
   handle: string;
+  device?: Device;
+  consent?: string;
   questions: Question[];
   answers: { questionId: string; text: string; serverLatencyMs: number; features: AnswerFeatures }[];
   features: Features;

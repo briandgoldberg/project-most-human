@@ -2,6 +2,7 @@ import type {
   AnswerFeatures,
   AnswerTelemetry,
   ClientEnv,
+  Device,
   Features,
   PointerEv,
   QuestionKind,
@@ -255,6 +256,14 @@ const AI_PHRASES = [
   /\bi'?d be happy to\b/i,
   /\bgreat question\b/i,
 ];
+
+/** Phone, tablet or desktop, as far as the browser's own report shows. */
+export function deviceOf(env: ClientEnv): Device {
+  if (/Mobi|iPhone|Android.*Mobile/i.test(env.ua)) return "phone";
+  if (/iPad|Tablet|Android/i.test(env.ua)) return "tablet";
+  if (env.touchPoints > 0 && Math.min(...env.screen) > 0 && Math.min(...env.screen) < 600) return "phone";
+  return "desktop";
+}
 
 /** The fixed, ordered list of features the behaviour model is trained on. */
 export const FEATURE_KEYS = [

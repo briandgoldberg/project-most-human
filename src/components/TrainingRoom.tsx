@@ -343,7 +343,13 @@ function Room({ summary, onChange, onLock }: { summary: TrainingSummary; onChang
         )}
       </section>
 
-      <button type="button" onClick={onLock} className="mt-10 text-xs text-dim underline underline-offset-4">
+      <p className="mt-10 max-w-xl text-xs text-dim">
+        Sessions here record keystroke timing, edits, pointer movement, drawing strokes and browser details. By playing
+        you agree they are kept with their human-or-agent label and may be used or shared, without your name, for
+        research into telling people from AI.
+      </p>
+
+      <button type="button" onClick={onLock} className="mt-4 block text-xs text-dim underline underline-offset-4">
         Lock the room on this browser
       </button>
     </>

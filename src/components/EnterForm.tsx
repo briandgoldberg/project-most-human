@@ -142,7 +142,9 @@ export function EnterForm({ round }: { round: RoundSummary }) {
 
       <p className="max-w-xl text-xs text-dim">
         While you answer, the game records your keystroke timing, edits, pointer movement, drawing strokes and browser
-        details, and the judge uses them along with your answers. Don&rsquo;t share anything private.
+        details, and the judge uses them along with your answers. By playing you agree these recordings and your answers
+        are kept and may be used or shared, without your handle or wallet, for research into telling people from AI.
+        Don&rsquo;t share anything private.
       </p>
     </form>
   );

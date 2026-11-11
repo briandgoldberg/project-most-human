@@ -5,7 +5,7 @@ import { llmWriteQuestions } from "./judge/llm";
 import { isValidAddress } from "./payments/address";
 import { MAX_ANSWER_CHARS, TEXT_QUESTIONS_PER_ROUND, bankQuestionsFor, drawQuestionFor } from "./questions";
 import { appendTraining, readRound, readTelemetry, saveTelemetry, updateRound } from "./store";
-import { aggregateFeatures, extractAnswerFeatures } from "./telemetry/features";
+import { aggregateFeatures, deviceOf, extractAnswerFeatures } from "./telemetry/features";
 import { sanitizeTelemetry } from "./telemetry/sanitize";
 import type { Entry, EntryPayment, JudgeResult, Kind, PaymentIntent, Question, Round, RoundState } from "./types";
 
@@ -36,6 +36,13 @@ export class GameError extends Error {
 // The Solana libraries are large and only needed when real fees are switched on,
 // so they are loaded on first use rather than with every request.
 const solana = () => import("./payments/solana");
+
+/**
+ * The wording of the data notice shown at entry. Change this when the notice
+ * changes, so every session records which one its player saw.
+ *   v2: adds that recordings may be kept and used for research and datasets.
+ */
+export const CONSENT_VERSION = "v2";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const INTENT_TTL_MS = 20 * 60 * 1000;
@@ -220,6 +227,7 @@ function addEntry(state: RoundState, input: NewEntry): Session {
     servedAt: [now],
     answers: [],
     userAgent: input.userAgent?.slice(0, 300),
+    consent: CONSENT_VERSION,
   };
   const token = issueToken(entry);
   state.entries[entry.id] = entry;
@@ -499,6 +507,8 @@ async function recordExample(
     cohortId,
     source,
     handle: entry.handle,
+    device: entry.device,
+    consent: entry.consent,
     questions: questionsOf(state, entry),
     answers: entry.answers.map(({ questionId, text, serverLatencyMs, features }) => ({
       questionId,
@@ -605,7 +615,10 @@ export async function answer(input: {
       serverLatencyMs: now - entry.servedAt[entry.progress],
       features: extractAnswerFeatures(question.kind, answerText, telemetry),
     });
-    if (telemetry.env) entry.env = telemetry.env;
+    if (telemetry.env) {
+      entry.env = telemetry.env;
+      entry.device = deviceOf(telemetry.env);
+    }
     entry.progress++;
 
     if (entry.progress < questions.length) {

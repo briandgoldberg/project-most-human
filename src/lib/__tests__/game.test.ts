@@ -108,6 +108,9 @@ test("the competition and the training room share a judge but nothing else", asy
   for (const e of examples) {
     assert.equal(Object.keys(e.telemetry).length, 5);
     assert.equal(e.judgeCorrect, e.judge.verdict === e.label);
+    // Each record says which notice the player saw and which judge scored them.
+    assert.equal(e.consent, "v2");
+    assert.equal(e.judge.judgeVersion, "1");
   }
   // Training sessions draw their own questions, so repeat sessions don't see the same set.
   assert.notDeepEqual(examples[0].questions.map((q) => q.id), examples[1].questions.map((q) => q.id));
@@ -267,4 +270,16 @@ test("wallet addresses are checked by shape, agreeing with the Solana library", 
   for (const address of [...good, ...bad, WALLET.slice(1), WALLET.slice(2), "1" + WALLET, TREASURY.slice(0, -1)]) {
     assert.equal(isValidAddress(address), library(address), address);
   }
+});
+
+test("the device is read from what the browser reports", async () => {
+  const { deviceOf } = await import("../telemetry/features");
+  const env = (ua: string, touchPoints: number, screen: [number, number]) =>
+    ({ ua, webdriver: false, languages: [], tz: "", screen, viewport: screen, dpr: 1, touchPoints, cores: 4, plugins: 0 });
+  assert.equal(deviceOf(env("Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) Mobile/15E148 Safari/604.1", 5, [393, 852])), "phone");
+  assert.equal(deviceOf(env("Mozilla/5.0 (Linux; Android 14; Pixel 7) Chrome/140.0 Mobile Safari/537.36", 5, [412, 915])), "phone");
+  assert.equal(deviceOf(env("Mozilla/5.0 (Linux; Android 14; SM-X710) Chrome/140.0 Safari/537.36", 10, [800, 1280])), "tablet");
+  assert.equal(deviceOf(env("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/140.0 Safari/537.36", 0, [1512, 982])), "desktop");
+  // A touchscreen laptop is still a desktop.
+  assert.equal(deviceOf(env("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36", 10, [1920, 1080])), "desktop");
 });
