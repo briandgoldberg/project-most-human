@@ -6,6 +6,7 @@ import { Connection, Keypair, Transaction } from "@solana/web3.js";
 import type { Kind, Question } from "../src/lib/types";
 import { runBrowserBot } from "./bots/browser";
 import { PERSONAS, type Persona } from "./bots/personas";
+import { STEALTH_PERSONAS, runStealthBot } from "./bots/stealth";
 import { rand } from "./bots/synth";
 import { answerText } from "./bots/text";
 
@@ -17,6 +18,8 @@ import { answerText } from "./bots/text";
  *   npm run bots -- --fast                    don't wait out the fabricated typing time
  *   npm run bots -- --llm                     write real answers with Claude (needs credentials)
  *   npm run bots -- --browser                 also run the Playwright bot through the real page
+ *   npm run bots -- --stealth 8               only the hardest agents: a real browser driven like a person,
+ *                                             one persona each, answers written by Claude (needs credentials)
  *   npm run bots -- --paying --wallets .solana-dev/players
  *                                             enter the public competition as paying players instead
  *
@@ -33,6 +36,8 @@ const { values: args } = parseArgs({
     fast: { type: "boolean", default: false },
     llm: { type: "boolean", default: false },
     browser: { type: "boolean", default: false },
+    stealth: { type: "string" },
+    "stealth-from": { type: "string", default: "0" },
     paying: { type: "boolean", default: false },
     wallets: { type: "string" },
     rpc: { type: "string", default: process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com" },
@@ -113,7 +118,9 @@ async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
 
 async function main() {
   const wanted = args.only?.split(",").map((s) => s.trim());
-  const roster = PERSONAS.filter((p) => !wanted || wanted.includes(p.name));
+  const stealth = Math.max(0, Number(args.stealth) || 0);
+  // Asking for stealth sessions alone runs just those.
+  const roster = PERSONAS.filter((p) => (wanted ? wanted.includes(p.name) : stealth === 0));
   if (wanted && roster.length !== wanted.filter((w) => w !== "browser").length) {
     throw new Error(`Unknown persona in --only. Available: ${PERSONAS.map((p) => p.name).join(", ")}, browser`);
   }
@@ -126,6 +133,8 @@ async function main() {
     for (let i = 0; i < count; i++) jobs.push(play(persona, wallets.length ? wallets[w++ % wallets.length] : undefined));
   }
   if (args.browser || wanted?.includes("browser")) jobs.push(runBrowserBot(args.url!, args.password!, { llm: args.llm! }));
+  for (let i = 0; i < stealth; i++) jobs.push(runStealthBot(args.url!, args.password!, Number(args["stealth-from"]) + i));
+  if (stealth) console.log(`Stealth personas: ${STEALTH_PERSONAS.join(", ")}`);
 
   console.log(`Running ${jobs.length} bot(s) against ${args.url}${args.fast ? " (fast)" : ", in real time; this takes a minute or two"}…`);
   const settled = await Promise.allSettled(jobs);
@@ -135,7 +144,7 @@ async function main() {
   results.sort((a, b) => b.score - a.score);
   console.log("\n  score  verdict  persona            judge said");
   for (const r of results) {
-    console.log(`  ${r.score.toFixed(1).padStart(5)}  ${r.verdict.padEnd(7)}  ${r.persona.padEnd(17)}  ${r.quip}`);
+    console.log(`  ${r.score.toFixed(1).padStart(5)}  ${r.verdict.padEnd(7)}  ${r.persona.padEnd(22)}  ${r.quip}`);
   }
   if (results.length && !args.paying) {
     const fooled = results.filter((r) => r.verdict === "human").length;
