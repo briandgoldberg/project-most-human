@@ -95,6 +95,8 @@ const llmOn = () => config().questionSource === "llm" && config().judge.llmEnabl
 /** How many opening questions of each style to keep in store, and how low it runs before more are written. */
 const POOL_FULL = 12;
 const POOL_LOW = 4;
+/** How long a claim on topping the store up stands, in case whoever made it never finishes. */
+const RESTOCK_CLAIM_MS = 3 * 60_000;
 
 /** Take a stored opening question, if there is one. */
 async function fromStore(style: "you" | "wild"): Promise<{ category: string; prompt: string; shortOk?: boolean } | null> {
@@ -115,6 +117,15 @@ async function fromStore(style: "you" | "wild"): Promise<{ category: string; pro
  */
 export async function restockQuestions(): Promise<number> {
   if (!llmOn()) return 0;
+  const low = (pool: { you: unknown[]; wild: unknown[] }) => pool.you.length <= POOL_LOW || pool.wild.length <= POOL_LOW;
+  if (!low(await readQuestionPool())) return 0;
+  // Claim the job first: several games can end at the same moment, and one top-up is enough.
+  const mine = await updateQuestionPool((pool) => {
+    if (!low(pool) || (pool.restockingAt && Date.now() - pool.restockingAt < RESTOCK_CLAIM_MS)) return false;
+    pool.restockingAt = Date.now();
+    return true;
+  });
+  if (!mine) return 0;
   const pool = await readQuestionPool();
   let added = 0;
   for (const style of ["you", "wild"] as const) {
@@ -124,6 +135,7 @@ export async function restockQuestions(): Promise<number> {
     await updateQuestionPool((p) => void p[style].push(...written));
     added += written.length;
   }
+  await updateQuestionPool((p) => void (p.restockingAt = undefined));
   return added;
 }
 

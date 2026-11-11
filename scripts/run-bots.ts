@@ -54,6 +54,8 @@ export interface BotResult {
   score: number;
   verdict: Kind;
   quip: string;
+  /** What the judge said moved the score, when the run reports it. */
+  why?: string[];
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -133,11 +135,11 @@ async function play(persona: Persona, wallet?: Keypair): Promise<BotResult> {
     }
     if (res.status !== 200) throw new Error(`${handle}: move rejected: ${res.json.message}`);
     if (res.json.done) {
-      const r = res.json.result as { score: number; verdict: Kind; quip: string; prize?: { tokens: number }; cancelled?: boolean };
+      const r = res.json.result as { score: number; verdict: Kind; quip: string; prize?: { tokens: number }; cancelled?: boolean; why?: { reasons: string[] } };
       // An agent that fooled the judge owes it an account of how.
       const debriefed = !args.human && (await sendDebrief(args.url!, token, { what: `Persona "${persona.name}": ${persona.about}`, file: "scripts/bots/personas.ts" }));
       const note = (r.prize ? ` [won ${r.prize.tokens}]` : r.cancelled ? " [cancelled]" : "") + (debriefed ? " [debriefed]" : "");
-      return { persona: persona.name, handle, score: r.score, verdict: r.verdict, quip: r.quip + note };
+      return { persona: persona.name, handle, score: r.score, verdict: r.verdict, quip: r.quip + note, why: r.why?.reasons };
     }
     step = res.json as typeof step;
   }
@@ -176,6 +178,8 @@ async function main() {
   console.log("\n  score  verdict  persona            judge said");
   for (const r of results) {
     console.log(`  ${r.score.toFixed(1).padStart(5)}  ${r.verdict.padEnd(7)}  ${r.persona.padEnd(22)}  ${r.quip}`);
+    // The judge's reasons, as the agent's builder is given them.
+    for (const reason of r.why ?? []) console.log(`${" ".repeat(18)}· ${reason}`);
   }
   if (results.length) {
     const fooled = results.filter((r) => r.verdict === "human").length;

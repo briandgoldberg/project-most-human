@@ -308,6 +308,8 @@ export async function readUsage(days = 1): Promise<UsageRecord[]> {
 export interface QuestionPool {
   you: { category: string; prompt: string; shortOk?: boolean }[];
   wild: { category: string; prompt: string; shortOk?: boolean }[];
+  /** When a top-up was last started, so two servers don't both write one. */
+  restockingAt?: number;
 }
 
 const QUESTION_POOL = "questions/pool";
