@@ -15,6 +15,8 @@ export interface HumanSummary {
   symbol: string;
   paymentMode: "mock" | "solana";
   cluster?: string;
+  /** The hour of the day (UTC) the daily payout run starts, if one is scheduled. */
+  payoutHourUtc?: number;
   sessionMinutes: number;
   players: number;
   winners: number;
@@ -132,6 +134,10 @@ export interface OwnerSummary {
   huntPool: { answers: number; people: number };
   symbol: string;
   prizesOwed: { id: string; handle: string; reason: "hunter" | "fooled"; tokens: number; wallet: string | null; wonAt: number }[];
+  /** What signed-in players have written in, newest first. */
+  feedback: { at: number; player: string; handle?: string; page?: string; email?: string; text: string }[];
+  /** The hour of the day (UTC) the daily payout run starts, if one is scheduled. */
+  payoutHourUtc?: number;
   /** What the game has used of Claude, by what it was for. `input` excludes what was read from cache. */
   usage: {
     today: { purpose: string; calls: number; input: number; output: number; cached: number; dollars: number | null }[];
@@ -200,6 +206,7 @@ export const api = {
   signIn: (credential: string) => call<Me>("/api/auth/google", { credential }),
   signOut: () => call<{ ok: true }>("/api/auth/signout", {}),
   saveWallet: (wallet: string) => call<Me>("/api/me/wallet", { wallet }),
+  feedback: (text: string, email: string, page: string) => call<{ ok: true }>("/api/feedback", { text, email: email || undefined, page }),
   enter: (body: Record<string, unknown>) => call<Session>("/api/enter", body),
   answer: (token: string, questionId: string, text: string, telemetry: AnswerTelemetry) =>
     call<Progress>("/api/answer", { token, questionId, text, telemetry }),

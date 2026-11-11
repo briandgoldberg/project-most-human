@@ -171,8 +171,36 @@ function Room({ summary, onChange, onLock }: { summary: OwnerSummary; onChange: 
         )}
         <p className="mt-2 text-xs text-dim">
           Pay them with <code>npm run prizes -- --execute</code>, which needs the treasury key. The website never holds
-          it. A player&rsquo;s prizes stay in their balance until they give an address to withdraw to.
+          it. A player&rsquo;s prizes stay in their balance until they give an address to withdraw to.{" "}
+          {summary.payoutHourUtc === undefined
+            ? "Players are told only that it goes out at the next payout: set PAYOUT_HOUR_UTC once the daily run is in place and they are told when."
+            : `Players are told the daily run starts around ${String(summary.payoutHourUtc).padStart(2, "0")}:00 UTC.`}
         </p>
+      </section>
+
+      <section className="pb-8">
+        <h2 className={heading}>Feedback and questions</h2>
+        {summary.feedback.length === 0 ? (
+          <p className="py-4 text-sm text-dim">Nothing yet. Signed-in players can write in from the corner of any page.</p>
+        ) : (
+          <ol className="divide-y divide-line">
+            {summary.feedback.map((f) => (
+              <li key={`${f.at}-${f.player}`} className="py-3 text-sm">
+                <p className="break-words whitespace-pre-wrap">{f.text}</p>
+                <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-dim">
+                  <span>{f.handle ?? `player ${f.player.slice(0, 6)}`}</span>
+                  <span>{new Date(f.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                  {f.page && <span>on {f.page}</span>}
+                  {f.email && (
+                    <a href={`mailto:${f.email}`} className="text-paper underline underline-offset-4">
+                      reply to {f.email}
+                    </a>
+                  )}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
 
       <section className="pb-8">

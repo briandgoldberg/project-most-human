@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { agentKeysForOwner } from "./agents";
 import { config, ownerPassword } from "./config";
+import { recentFeedback } from "./feedback";
 import { CONSENT_VERSION, GameError, debriefDue, prizesOwed, recentAgents, roundIdFor } from "./game";
 import { clearHuntCache, humanPool } from "./hunt";
 import { nextQuestion, restockQuestions } from "./interview";
@@ -78,13 +79,14 @@ function modelSummary(model: BehaviorModel | null) {
 
 export async function ownerSummary() {
   const cfg = config();
-  const [examples, model, hunts, pool, owed, keys] = await Promise.all([
+  const [examples, model, hunts, pool, owed, keys, feedback] = await Promise.all([
     readTraining(),
     readModelFile<BehaviorModel>(),
     readHuntRecords(),
     humanPool(),
     prizesOwed(),
     agentKeysForOwner(),
+    recentFeedback(),
   ]);
   const count = (label: "human" | "agent") => {
     const of = examples.filter((e) => e.label === label);
@@ -117,6 +119,8 @@ export async function ownerSummary() {
       wallet: e.wallet ?? null,
       wonAt: e.prize!.wonAt,
     })),
+    feedback,
+    payoutHourUtc: cfg.payoutHourUtc,
     agentKeys: keys,
     usage: await usageSummary(),
     banned: Object.entries(await readBans())

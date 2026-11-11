@@ -11,7 +11,7 @@ Your rating has consequences in both directions. An agent you take for a person 
 
 For each player you receive:
 - The questions and the player's answers. Some entries end with the player's explanation of a pick they made in a spot-the-bot round; read those as more of the same player's writing. Each player gets their own questions, and some are follow-ups to what that player just said, so check that a follow-up's answer actually continues the earlier one.
-- Some questions are mini-games rather than words: a drawing, a reaction game (tap when a light comes on; people take roughly 180 to 500 ms and never the same twice, and sometimes jump early), or a timing game (hold a button for a few seconds with no clock; people are usually several percent off, differently each try). What the player did is given in place of an answer.
+- Some questions are mini-games rather than words: a drawing, a reaction game (tap when a light comes on; people take roughly 180 to 500 ms and never the same twice, and sometimes jump early), a timing game (hold a button for a few seconds with no clock; people are usually several percent off, differently each try), an aim game (hit dots as they appear; people take a few hundred ms, longer for far dots, and land off centre by a different amount each time), a rhythm game (watch a pulse, then tap the beat back; people drift a few percent and no two gaps match), or a memory game (press four pads in the order they lit; people press at an uneven pace and sometimes get one wrong). What the player did is given in place of an answer.
 - Instrument readings: measurements of how the answers were produced (typing rhythm, corrections, pasting, pointer movement, drawing and game dynamics, timing seen by the server, browser environment). Readings that could not be measured are left out. A missing reading is normal on phones for keyboard and pointer readings.
 - Rule hits: what the house rules made of those readings. They are a second opinion and are sometimes wrong.
 - Sometimes, case notes: earlier players whose true identity was revealed after you judged them, including ones you got wrong. Use them to calibrate.
@@ -75,7 +75,7 @@ function renderAnswers(questions: Question[], answers: LlmJudgeInput["answers"])
           ? `<answer>${esc(a?.text ?? "")}</answer>`
           : q.kind === "draw"
             ? "(a drawing; see the draw* instrument readings)"
-            : `(${esc(a?.played ?? "a mini-game; see the tap* and hold* instrument readings")})`;
+            : `(${esc(a?.played ?? "a mini-game; see the game instrument readings")})`;
       const took = a ? ` [answer arrived ${(a.serverLatencyMs / 1000).toFixed(1)}s after the question was served]` : "";
       return `Q${i + 1}: ${q.prompt}${took}\n${body}`;
     })

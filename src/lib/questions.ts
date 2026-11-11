@@ -181,7 +181,7 @@ export const BANK = { you: TEXT_BANK, wild: WILD_BANK };
 const between = (lo: number, hi: number) => Math.round(lo + Math.random() * (hi - lo));
 
 /** The mini-games a "game" step can be. A drawing counts as one. */
-export const GAME_KINDS = ["draw", "tap", "hold"] as const;
+export const GAME_KINDS = ["draw", "tap", "hold", "aim", "beat", "recall"] as const;
 export type GameKind = (typeof GAME_KINDS)[number];
 
 /** Set up one mini-game. The waits and targets are picked here, on the server, and differ every time. */
@@ -203,6 +203,46 @@ export function gameQuestion(kind: GameKind): Omit<Question, "id"> {
       prompt: `Hold the button down for exactly ${seconds} seconds, then let go.`,
       hint: "Three tries. No clock: count in your head.",
       game: { holdMs: seconds * 1000, tries: 3 },
+    };
+  }
+  if (kind === "aim") {
+    // Six dots, each well away from the one before, so the hand has to travel.
+    const targets: [number, number][] = [];
+    while (targets.length < 6) {
+      const dot: [number, number] = [between(14, 86) / 100, between(16, 84) / 100];
+      const last = targets[targets.length - 1];
+      if (!last || Math.hypot(dot[0] - last[0], dot[1] - last[1]) >= 0.3) targets.push(dot);
+    }
+    return {
+      kind: "aim",
+      category: "game",
+      prompt: "Hit each dot as it appears.",
+      hint: "Six dots. Mouse, trackpad or finger.",
+      game: { targets, radius: 26, gapMs: between(220, 320) },
+    };
+  }
+  if (kind === "beat") {
+    return {
+      kind: "beat",
+      category: "game",
+      prompt: "Watch the light pulse, then tap the same beat back.",
+      hint: "Four pulses to watch, six taps to give back. Keep the pace.",
+      game: { beatMs: between(480, 820), pulses: 4, beats: 6 },
+    };
+  }
+  if (kind === "recall") {
+    // Five steps over four pads, never the same pad twice running.
+    const sequence: number[] = [];
+    while (sequence.length < 5) {
+      const pad = Math.floor(Math.random() * 4);
+      if (pad !== sequence[sequence.length - 1]) sequence.push(pad);
+    }
+    return {
+      kind: "recall",
+      category: "game",
+      prompt: "Watch the pads light up, then press them in the same order.",
+      hint: "Five steps. One look.",
+      game: { sequence, showMs: between(520, 640) },
     };
   }
   return { ...randomDrawQuestion(), kind: "draw" };

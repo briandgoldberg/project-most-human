@@ -29,12 +29,13 @@ export const LEGACY_PLAN: StepKind[] = ["fresh", "followup", "fresh", "followup"
 
 /**
  * A whole game, in order. With hunting on, the hunting rounds come in two
- * blocks of three between the questions, so a player is never doing one kind
- * of thing for long.
+ * blocks of three, each with a mini-game before it and one more to finish on,
+ * so a player is never doing one kind of thing for long and is playing
+ * something by the third step.
  */
 export function gamePlan(hunting: boolean): StepKind[] {
   return hunting
-    ? ["fresh", "followup", "hunt", "hunt", "hunt", "game", "wild", "followup", "hunt", "hunt", "hunt", "game"]
+    ? ["fresh", "followup", "game", "hunt", "hunt", "hunt", "wild", "followup", "game", "hunt", "hunt", "hunt", "game"]
     : [...QUESTION_PLAN];
 }
 
@@ -145,10 +146,13 @@ export async function restockQuestions(): Promise<number> {
  */
 export async function nextQuestion(kind: StepKind, history: Exchange[]): Promise<Question> {
   if (kind === "game" || kind === "draw") {
-    // A different game from any this session has had. An old "draw" step is always a drawing.
+    // A different game from any this session has had, out of those in play. An old "draw" step is always a drawing.
+    const wanted = config().miniGames;
+    const inPlay = GAME_KINDS.filter((g) => wanted.includes(g));
+    const kinds = inPlay.length ? inPlay : GAME_KINDS;
     const played = history.map((h) => h.question.kind);
-    const open = GAME_KINDS.filter((g) => !played.includes(g));
-    return { ...gameQuestion(kind === "draw" ? "draw" : pickOne(open.length ? open : GAME_KINDS)), id: id() };
+    const open = kinds.filter((g) => !played.includes(g));
+    return { ...gameQuestion(kind === "draw" ? "draw" : pickOne(open.length ? open : kinds)), id: id() };
   }
 
   const asked = history.filter((h) => h.question.kind === "text");

@@ -53,9 +53,12 @@ test("a full game: questions and hunting interleaved, the ladder climbed, the pr
   assert.equal((await game.humanSummary()).hunting, true);
 
   const session = await game.enter({ handle: "sharp eyes", wallet: WALLET });
-  assert.equal(session.total, 12);
+  assert.equal(session.total, 13);
   const { result, seen } = await play(game, session);
-  assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3", "game", "text", "text", "hunt4", "hunt5", "hunt6", "game"]);
+  // A mini-game by the third step, one before each block of hunting and one to finish on.
+  assert.deepEqual(seen, ["text", "text", "game", "hunt1", "hunt2", "hunt3", "text", "text", "game", "hunt4", "hunt5", "hunt6", "game"]);
+  const games = (await peek(session)).questions!.filter((q) => q.kind !== "text").map((q) => q.kind);
+  assert.equal(new Set(games).size, 3, "the three mini-games in a sitting are all different");
   assert.deepEqual(result.hunt, { cleared: 6, fooled: false });
   assert.deepEqual(result.prize, { tokens: 500, symbol: "PLAY", payable: true });
   assert.equal(result.cancelled, undefined);
@@ -98,7 +101,7 @@ test("one wrong pick ends the game there and then", async () => {
   const game = await import("../game");
   const session = await game.enter({ handle: "fooled at three" });
   const { result, seen } = await play(game, session, { hunt: (round, right) => (round === 3 ? ((1 - right) as 0 | 1) : right) });
-  assert.deepEqual(seen, ["text", "text", "hunt1", "hunt2", "hunt3"]);
+  assert.deepEqual(seen, ["text", "text", "game", "hunt1", "hunt2", "hunt3"]);
   assert.deepEqual(result.hunt, { cleared: 2, fooled: true });
   // They still win for how far they got: judged human, two rounds cleared.
   assert.equal(result.prize?.tokens, 80);

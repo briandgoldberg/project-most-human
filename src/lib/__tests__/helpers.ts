@@ -18,16 +18,35 @@ export function playLikeAPerson(q: Question, n = 0) {
   const base = humanlike("", n);
   base.keys = [];
   base.inputs = [];
+  const spec = q.game ?? {};
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
   if (q.kind === "tap") {
-    const waits = q.game?.waits ?? [];
+    const waits = spec.waits ?? [];
     const taps = waits.map((_, i) => [243.5, 268.2, 311.9, 229.4, 287.1][i % 5] + n);
     base.game = { taps, early: n % 2 };
-    base.submittedAt = base.shownAt + waits.reduce((a, b) => a + b, 0) + taps.reduce((a, b) => a + b, 0) + 2500;
+    base.submittedAt = base.shownAt + sum(waits) + sum(taps) + 2500;
+  } else if (q.kind === "aim") {
+    const hits = (spec.targets ?? []).map((_, i) => [512.4, 688.1, 430.9, 745.3, 601.7, 566.2][i % 6] + n);
+    const offsets = hits.map((_, i) => [0.31, 0.12, 0.58, 0.24, 0.44, 0.19][i % 6]);
+    base.game = { hits, offsets, misses: n % 2 };
+    base.submittedAt = base.shownAt + hits.length * (spec.gapMs ?? 250) + sum(hits) + 2500;
+  } else if (q.kind === "beat") {
+    const beat = spec.beatMs ?? 600;
+    const beatGaps = [0.94, 1.05, 0.97, 1.08, 0.92].slice(0, (spec.beats ?? 6) - 1).map((k) => Math.round(beat * k));
+    base.game = { beatGaps };
+    base.submittedAt = base.shownAt + (spec.pulses ?? 4) * beat + sum(beatGaps) + 2500;
+  } else if (q.kind === "recall") {
+    const sequence = spec.sequence ?? [];
+    // One slip, on the last step, as people do.
+    const picks = sequence.map((pad, i) => (i === sequence.length - 1 ? (pad + 1) % 4 : pad));
+    const pickGaps = sequence.map((_, i) => [910.3, 482.6, 615.2, 398.7, 740.1][i % 5] + n);
+    base.game = { picks, pickGaps };
+    base.submittedAt = base.shownAt + sequence.length * (spec.showMs ?? 560) + sum(pickGaps) + 2500;
   } else {
-    const target = q.game?.holdMs ?? 3000;
+    const target = spec.holdMs ?? 3000;
     const holds = [0.91, 1.07, 0.97].map((k) => Math.round(target * k));
     base.game = { holds };
-    base.submittedAt = base.shownAt + holds.reduce((a, b) => a + b, 0) + 4000;
+    base.submittedAt = base.shownAt + sum(holds) + 4000;
   }
   return base;
 }
@@ -36,6 +55,9 @@ export function playLikeAPerson(q: Question, n = 0) {
 export function playLikeAScript(q: Question) {
   if (q.kind === "draw") return { strokes: [[[1, 1, 1, 0], [2, 9, 9, 0]]] };
   if (q.kind === "tap") return { game: { taps: (q.game?.waits ?? []).map(() => 6), early: 0 } };
+  if (q.kind === "aim") return { game: { hits: (q.game?.targets ?? []).map(() => 6), offsets: (q.game?.targets ?? []).map(() => 0), misses: 0 } };
+  if (q.kind === "beat") return { game: { beatGaps: Array.from({ length: (q.game?.beats ?? 6) - 1 }, () => q.game?.beatMs ?? 600) } };
+  if (q.kind === "recall") return { game: { picks: q.game?.sequence ?? [], pickGaps: (q.game?.sequence ?? []).map(() => 60) } };
   return { game: { holds: Array.from({ length: q.game?.tries ?? 3 }, () => q.game?.holdMs ?? 3000) } };
 }
 

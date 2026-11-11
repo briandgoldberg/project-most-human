@@ -111,6 +111,27 @@ export function heuristicScore(f: Features): HeuristicResult {
     rule(has("holdCv") && v("holdCv") < 0.005, -12, "every hold lasted exactly as long as the others");
     rule(e >= 0.02 && e <= 0.5 && (!has("holdCv") || v("holdCv") >= 0.01), 5, "misjudges time the way people do");
   }
+  if (has("aimMedian")) {
+    const m = v("aimMedian");
+    const centred = has("aimOffset") && v("aimOffset") < 0.03;
+    rule(m < 120, -25, `reaches each dot in ${m.toFixed(0)}ms, before a hand could get there`);
+    rule(has("aimCv") && v("aimCv") < 0.04, -15, "took the same time to reach every dot, near or far");
+    rule(centred, -15, "hit every dot dead centre");
+    rule(m >= 200 && m <= 3000 && has("aimCv") && v("aimCv") >= 0.08 && !centred, 6, "aims like a hand: a little off centre, and never at one pace");
+  }
+  if (has("beatError")) {
+    const e = v("beatError");
+    rule(e < 0.01, -15, "tapped the beat back to within 1%");
+    rule(has("beatCv") && v("beatCv") < 0.005, -12, "every gap between taps was exactly the same");
+    rule(e >= 0.015 && e <= 0.5 && (!has("beatCv") || v("beatCv") >= 0.01), 5, "keeps a beat the way people do: close, and drifting");
+  }
+  if (has("recallMedian")) {
+    const m = v("recallMedian");
+    rule(m < 100, -20, `pressed the pads ${m.toFixed(0)}ms apart, faster than a hand moves between them`);
+    rule(has("recallCv") && v("recallCv") < 0.04, -12, "pressed every pad at exactly the same pace");
+    rule(m >= 180 && m <= 4000 && has("recallCv") && v("recallCv") >= 0.08, 5, "repeats a sequence at a person's uneven pace");
+    rule(has("recallRight") && v("recallRight") < 1, 2, "got part of the sequence wrong");
+  }
 
   // --- Text surface ---------------------------------------------------------
   rule(v("aiPhraseHits") > 0, -Math.min(20, 8 * v("aiPhraseHits")), "stock assistant phrasing");

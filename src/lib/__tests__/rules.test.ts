@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { Hunt, Question } from "../types";
 import { humanlike } from "./fixtures";
-import { ANSWERS, peek, play, playLikeAPerson, type Game } from "./helpers";
+import { ANSWERS, peek, play, playLikeAPerson, playLikeAScript, type Game } from "./helpers";
 
 process.env.PMH_DATA_DIR = mkdtempSync(path.join(tmpdir(), "pmh-rules-"));
 process.env.PAYMENT_MODE = "mock";
@@ -88,6 +88,7 @@ test("mini-games are scored on how they were played, and can't be skipped or fak
   const { heuristicScore } = await import("../judge/heuristic");
   const { extractAnswerFeatures } = await import("../telemetry/features");
   const { gameQuestion } = await import("../questions");
+  const { checkGame, describePlay, leastGameTime } = await import("../rules");
 
   // Each kind sets itself up differently every time, on the server.
   const tap = { ...gameQuestion("tap"), id: "t" } as Question;
@@ -107,6 +108,52 @@ test("mini-games are scored on how they were played, and can't be skipped or fak
   assert.match(rules({ holdError: 0.06, holdCv: 0.07 }), /misjudges time the way people do/);
   assert.match(rules({ holdError: 0.001, holdCv: 0.001 }), /to within 1%.*exactly as long as the others/);
 
+  // The newer games: dots to hit, a beat to tap back, a sequence to repeat. Each is set up on the server.
+  const aim = { ...gameQuestion("aim"), id: "a" } as Question;
+  const beat = { ...gameQuestion("beat"), id: "b" } as Question;
+  const recall = { ...gameQuestion("recall"), id: "r" } as Question;
+  assert.ok(aim.game!.targets!.length === 6 && aim.game!.targets!.every(([x, y]) => x > 0.1 && x < 0.9 && y > 0.1 && y < 0.9));
+  assert.ok(aim.game!.targets!.every(([x, y], i, all) => i === 0 || Math.hypot(x - all[i - 1][0], y - all[i - 1][1]) >= 0.3), "each dot is well away from the last");
+  assert.ok(beat.game!.beatMs! >= 480 && beat.game!.beatMs! <= 820 && beat.game!.pulses === 4 && beat.game!.beats === 6);
+  assert.ok(recall.game!.sequence!.length === 5 && recall.game!.sequence!.every((pad, i, all) => pad >= 0 && pad <= 3 && pad !== all[i - 1]));
+
+  const aimed = extractAnswerFeatures("aim", "", playLikeAPerson(aim), aim.game);
+  assert.ok(aimed.aimMedian! > 400 && aimed.aimCv! > 0.08 && aimed.aimOffset! > 0.1);
+  const kept = extractAnswerFeatures("beat", "", playLikeAPerson(beat), beat.game);
+  assert.ok(kept.beatError! > 0.03 && kept.beatError! < 0.1 && kept.beatCv! > 0.03);
+  const recalled = extractAnswerFeatures("recall", "", playLikeAPerson(recall), recall.game);
+  assert.equal(recalled.recallRight, 0.8);
+  assert.ok(recalled.recallMedian! > 300 && recalled.recallCv! > 0.1);
+  // A game's readings are only taken from that game.
+  assert.equal(extractAnswerFeatures("tap", "", playLikeAPerson(aim), tap.game).aimMedian, null);
+
+  assert.match(rules({ aimMedian: 580, aimCv: 0.2, aimOffset: 0.3 }), /aims like a hand/);
+  assert.match(rules({ aimMedian: 6, aimCv: 0, aimOffset: 0 }), /before a hand could get there.*near or far.*dead centre/);
+  assert.match(rules({ beatError: 0.05, beatCv: 0.06 }), /keeps a beat the way people do/);
+  assert.match(rules({ beatError: 0, beatCv: 0 }), /to within 1%.*exactly the same/);
+  assert.match(rules({ recallMedian: 520, recallCv: 0.25, recallRight: 0.8 }), /uneven pace.*part of the sequence wrong/);
+  assert.match(rules({ recallMedian: 60, recallCv: 0, recallRight: 1 }), /faster than a hand moves.*exactly the same pace/);
+
+  // None can be sent back half-played, and each is put into words for the judge.
+  assert.match(checkGame(aim, { hits: [500, 600], offsets: [0.2, 0.3] })!, /hit every dot/);
+  assert.match(checkGame(beat, { beatGaps: [600, 610] })!, /tap the whole beat back/);
+  assert.match(checkGame(recall, { picks: [0, 1], pickGaps: [500, 400] })!, /a pad for every step/);
+  for (const q of [aim, beat, recall]) assert.equal(checkGame(q, playLikeAPerson(q).game), null);
+  assert.match(describePlay(aim, playLikeAPerson(aim).game)!, /^Aim game, 6 dots\. Reached them in 512, 688, .* ms, landing 31%, 12%, .* of the way from centre to edge\.$/);
+  assert.match(describePlay(aim, { ...playLikeAPerson(aim).game, misses: 2 })!, /edge\. Missed 2 times\.$/);
+  assert.match(describePlay(beat, playLikeAPerson(beat).game)!, /^Rhythm game: shown a pulse every 0\.\d\ds, then tapped it back\. Gaps between taps: /);
+  assert.match(describePlay(recall, playLikeAPerson(recall).game)!, /^Memory game: shown 5 pads lighting in order, then pressed them back\. Got 4 of 5 right, 483, 615, 399, 740 ms between presses\.$/);
+  // Each takes at least as long as its lights and dots do, whatever comes back.
+  assert.ok(leastGameTime(aim, playLikeAScript(aim).game) >= 6 * 220);
+  assert.ok(leastGameTime(beat, playLikeAScript(beat).game) >= 3 * 480 + 5 * 480);
+  assert.ok(leastGameTime(recall, playLikeAScript(recall).game) >= 5 * 520);
+
+  // What comes back from a player's machine is cleaned up before it is trusted.
+  const { sanitizeTelemetry } = await import("../telemetry/sanitize");
+  const cleaned = sanitizeTelemetry({ game: { hits: [500, "x", -1, 612.345], offsets: [0.25, 9, 0.5004], misses: 2.4, picks: [0, 3, 7, 1.2], pickGaps: [400], beatGaps: [601.26] } }).game!;
+  assert.deepEqual(cleaned, { taps: undefined, holds: undefined, hits: [500, 612.3], offsets: [0.25, 0.5], beatGaps: [601.3], picks: [0, 3, 1], pickGaps: [400], early: 0, misses: 2 });
+  assert.equal(sanitizeTelemetry({ game: { nothing: true } }).game, undefined);
+
   // In a game: a mini-game comes third. It can't be sent back unplayed.
   const session = await game.enter({ handle: "gamer", deviceId: "gamer-cookie-1" });
   const two = await answerAsPerson(game, session, session.question, ANSWERS[0]);
@@ -118,7 +165,7 @@ test("mini-games are scored on how they were played, and can't be skipped or fak
   const after = await answerAsPerson(game, session, q, "", 2);
   assert.ok(!after.done);
   const stored = (await peek(session)).answers[2];
-  if (q.kind !== "draw") assert.match(stored.played!, /^(Reaction|Timing) game/);
+  if (q.kind !== "draw") assert.match(stored.played!, /^(Reaction|Timing|Aim|Rhythm|Memory) game/);
 
   // On the human side, a game finished faster than it can be played, or reactions no nerve could manage, end it there.
   for (const cheat of ["clock", "nerves"] as const) {
@@ -193,14 +240,14 @@ test("an agent is told why it scored what it did, and a settled case doesn't cos
   assert.ok(crude.result.score <= 40 && why.behaviour <= 40 && why.judge === undefined);
   assert.ok(why.reasons.some((r) => /^-\d+ /.test(r)), "the rules that counted against it are listed with what they cost");
   assert.ok(why.reasons.some((r) => r.includes("decided on hard evidence (no browser recording came with the answers)")));
-  assert.equal(why.judgeVersion, "4");
+  assert.equal(why.judgeVersion, "5");
   // One that plays like a person gets its reasons too.
   const slick = await play(game, await game.enterAgent({ key: builder, handle: "slick" }));
   assert.ok(slick.result.why!.reasons.some((r) => r.startsWith("+")));
   // The agents' page lists recent runs with their scores, and says which judge is scoring.
   const summary = await agents.agentSummary();
   assert.deepEqual(summary.board.map((r) => [r.handle, r.fooled]), [["slick", slick.result.impostor!.fooled], ["crude", false]]);
-  assert.equal(summary.judge.version, "4");
+  assert.equal(summary.judge.version, "5");
   // Players on the human side aren't handed the judge's working.
   const human = await play(game, await game.enter({ handle: "a person" }));
   assert.equal(human.result.why, undefined);
