@@ -19,31 +19,25 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** The latest few games, a line each. */
+const BOARD_ROWS = 5;
+
 function Board({ summary }: { summary: HumanSummary }) {
   if (summary.board.length === 0) {
-    return <p className="py-6 text-sm text-dim">Nobody has finished a game this week. Go first.</p>;
+    return <p className="py-4 text-sm text-dim">Nobody has finished a game this week. Go first.</p>;
   }
   return (
     <ol className="divide-y divide-line">
-      {summary.board.map((row, i) => (
-        <li key={i} className="flex items-baseline gap-3 py-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-baseline gap-x-2">
-              <span className="break-all">{row.handle}</span>
-              {row.won !== undefined && (
-                <span className="text-[11px] tracking-widest text-pulse uppercase">
-                  won {fmt(row.won)} {summary.symbol}
-                </span>
-              )}
-            </div>
-            <div className="text-xs text-dim">&ldquo;{row.quip}&rdquo;</div>
-          </div>
-          {row.rounds > 0 && (
-            <span className="shrink-0 text-xs text-dim">
-              round {row.cleared} of {row.rounds}
+      {summary.board.slice(0, BOARD_ROWS).map((row, i) => (
+        <li key={i} className="flex items-baseline gap-3 py-2 text-sm">
+          <span className="min-w-0 flex-1 truncate">{row.handle}</span>
+          {row.won !== undefined && (
+            <span className="shrink-0 text-xs text-pulse">
+              {fmt(row.won)} {summary.symbol}
             </span>
           )}
-          <span className="w-12 shrink-0 text-right font-display text-xl tabular-nums" title="How human the judge found them">
+          {row.rounds > 0 && <span className="shrink-0 text-xs text-dim">round {row.cleared}</span>}
+          <span className="w-10 shrink-0 text-right tabular-nums" title="How human the judge found them, out of 100">
             {row.score.toFixed(1)}
           </span>
         </li>
@@ -132,7 +126,6 @@ function Door({ summary, me, onMe }: { summary: HumanSummary; me: Me | null; onM
     return (
       <div className="space-y-3">
         <h2 className="font-display text-2xl">Sign in to play</h2>
-        <p className="max-w-md text-sm text-dim">One Google account, one player. The game keeps a scrambled id for your account, not your email.</p>
         <GoogleSignIn clientId={summary.signIn.clientId} onSignedIn={onMe} />
       </div>
     );
@@ -230,41 +223,23 @@ export function Lobby() {
             <Door summary={summary} me={me} onMe={setMe} />
           </section>
 
-          <section>
+          <section className="grid gap-x-6 gap-y-3 border-t border-line pt-5 text-sm text-dim sm:grid-cols-3">
+            <p>
+              <span className="text-paper">Be human.</span> Answer a few questions for the AI judge.
+            </p>
+            <p>
+              <span className="text-paper">Hunt.</span> Pick the person&rsquo;s answer, not the machine&rsquo;s.
+            </p>
+            <p>
+              <span className="text-paper">Win.</span>{" "}
+              {summary.hunting ? `More ${summary.symbol} for every round you clear.` : `${fmt(summary.prizes[0])} ${summary.symbol} for proving it.`}
+            </p>
+          </section>
+
+          <section className="mt-8">
             <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">Recent hunters</h2>
             <Board summary={summary} />
           </section>
-
-          <section className="mt-10 grid gap-6 border-t border-line pt-6 text-sm text-dim sm:grid-cols-3">
-            <div>
-              <div className="mb-1 text-paper">Be human</div>
-              An AI asks you questions and watches how you answer. If it takes you for a bot, you&rsquo;re out.
-            </div>
-            <div>
-              <div className="mb-1 text-paper">Hunt</div>
-              Two answers to one question: a person&rsquo;s and a machine&rsquo;s. Pick the person. It gets harder each
-              round, and a wrong pick ends the run.
-            </div>
-            <div>
-              <div className="mb-1 text-paper">Win</div>
-              {fmt(summary.prizes[0])} {summary.symbol} for proving you&rsquo;re human, more for every round you clear.
-              Prizes add up in your balance; withdraw whenever you like.
-            </div>
-          </section>
-
-          {summary.hunting && (
-            <section className="mt-8">
-              <h2 className="border-b border-line pb-2 text-[11px] tracking-widest text-dim uppercase">Prizes</h2>
-              <ol className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
-                {summary.prizes.map((tokens, cleared) => (
-                  <li key={cleared} className="flex items-baseline gap-2">
-                    <span className="text-xs text-dim">{cleared === 0 ? "judged human" : `round ${cleared}`}</span>
-                    <span className="tabular-nums">{fmt(tokens)}</span>
-                  </li>
-                ))}
-              </ol>
-            </section>
-          )}
 
           <footer className="mt-12 space-y-2 border-t border-line pt-4 text-xs text-dim">
             <p>

@@ -52,7 +52,7 @@ export function GoogleSignIn({ clientId, onSignedIn }: { clientId: string; onSig
     <div className="space-y-3">
       <Script src="https://accounts.google.com/gsi/client" onReady={ready} onError={() => setState("failed")} />
       {/* Google draws its button in here. It sits on a light patch because the button is Google's to style. */}
-      <div ref={holder} className="min-h-11" style={{ colorScheme: "light" }} />
+      <div ref={holder} className="min-h-11 max-w-xs" style={{ colorScheme: "light" }} />
       {state === "loading" && <p className="text-sm text-dim">Loading Google sign-in…</p>}
       {state === "checking" && <p className="text-sm text-dim">Checking with Google…</p>}
       {state === "failed" && (
