@@ -1,6 +1,7 @@
-import { createHash, createHmac, createPublicKey, timingSafeEqual, verify as verifySignature } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { config, sessionSecret } from "./config";
 import { GameError } from "./game";
+import { TokenRefused, verifyToken } from "./jwt";
 
 /**
  * Who a player on the human side is: a Google account.
@@ -14,44 +15,10 @@ import { GameError } from "./game";
 export const PLAYER_COOKIE = "pmh_player";
 const PASS_TTL_S = 30 * 24 * 60 * 60;
 const GOOGLE_CERTS = "https://www.googleapis.com/oauth2/v3/certs";
-const ISSUERS = new Set(["https://accounts.google.com", "accounts.google.com"]);
-const CLOCK_SKEW_S = 120;
-const CERTS_TTL_MS = 60 * 60 * 1000;
-
-interface Jwk {
-  kid: string;
-  kty: string;
-  n: string;
-  e: string;
-}
-
-let certs: { at: number; keys: Jwk[] } | undefined;
-
-/** Google's current signing keys. They rotate, so an unknown key id is worth one fresh look. */
-async function googleKeys(fresh = false): Promise<Jwk[]> {
-  // For running the sign-in flow locally without Google. Never read in production.
-  const test = process.env.NODE_ENV !== "production" ? process.env.GOOGLE_TEST_JWKS : undefined;
-  if (test) return (JSON.parse(test) as { keys: Jwk[] }).keys;
-  if (!fresh && certs && Date.now() - certs.at < CERTS_TTL_MS) return certs.keys;
-  const res = await fetch(GOOGLE_CERTS);
-  if (!res.ok) throw new Error(`Could not fetch Google's signing keys (${res.status})`);
-  certs = { at: Date.now(), keys: ((await res.json()) as { keys: Jwk[] }).keys };
-  return certs.keys;
-}
-
+const ISSUERS = ["https://accounts.google.com", "accounts.google.com"];
 const refuse = (why: string): never => {
   console.warn(`[auth] Google sign-in refused: ${why}`);
   throw new GameError(401, "bad_sign_in", "Google sign-in didn't check out. Try again.");
-};
-
-const decode = (part: string): Record<string, unknown> => {
-  try {
-    const value: unknown = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
-    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-  } catch {
-    // fall through
-  }
-  return refuse("token is not readable");
 };
 
 export interface Player {
@@ -71,29 +38,17 @@ const playerId = (sub: string) => createHash("sha256").update(`player:${sessionS
 export async function verifyGoogleCredential(credential: unknown, now = Date.now()): Promise<Player> {
   const clientId = config().googleClientId;
   if (!clientId) throw new GameError(400, "sign_in_off", "Google sign-in isn't set up on this site");
-  const parts = typeof credential === "string" && credential.length < 4096 ? credential.split(".") : [];
-  if (parts.length !== 3) return refuse("not a token");
-  const [head, body, signature] = parts;
-  const header = decode(head);
-  if (header.alg !== "RS256" || typeof header.kid !== "string") return refuse("unexpected algorithm or no key id");
-
-  let key = (await googleKeys()).find((k) => k.kid === header.kid);
-  if (!key) key = (await googleKeys(true)).find((k) => k.kid === header.kid);
-  if (!key || key.kty !== "RSA") return refuse("signed with a key Google doesn't list");
-  const signed = verifySignature(
-    "RSA-SHA256",
-    Buffer.from(`${head}.${body}`),
-    createPublicKey({ key: { kty: key.kty, n: key.n, e: key.e }, format: "jwk" }),
-    Buffer.from(signature, "base64url"),
-  );
-  if (!signed) return refuse("signature doesn't match");
-
-  const claims = decode(body);
-  const seconds = now / 1000;
-  if (typeof claims.iss !== "string" || !ISSUERS.has(claims.iss)) return refuse("not issued by Google");
-  if (claims.aud !== clientId) return refuse("issued for a different site");
-  if (typeof claims.exp !== "number" || claims.exp < seconds - CLOCK_SKEW_S) return refuse("expired");
-  if (typeof claims.iat !== "number" || claims.iat > seconds + CLOCK_SKEW_S) return refuse("dated in the future");
+  const claims = await verifyToken(
+    credential,
+    {
+      keysUrl: GOOGLE_CERTS,
+      // For running the sign-in flow locally without Google. Never read in production.
+      testKeys: process.env.NODE_ENV !== "production" ? process.env.GOOGLE_TEST_JWKS : undefined,
+      issuers: ISSUERS,
+      audience: clientId,
+    },
+    now,
+  ).catch((err) => (err instanceof TokenRefused ? refuse(err.message) : Promise.reject(err)));
   if (typeof claims.sub !== "string" || !claims.sub) return refuse("no account id");
   if (claims.email_verified === false) return refuse("email not verified");
 

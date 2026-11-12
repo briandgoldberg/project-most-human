@@ -27,6 +27,23 @@ function idToken(claims: Record<string, unknown> = {}, header: Record<string, un
   return `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(key).toString("base64url")}`;
 }
 
+// The payout job's identity comes from GitHub the same way: a token signed with keys GitHub publishes.
+const github = generateKeyPairSync("rsa", { modulusLength: 2048 });
+process.env.GITHUB_TEST_JWKS = JSON.stringify({ keys: [{ ...github.publicKey.export({ format: "jwk" }), kid: "gh-1" }] });
+
+/** The token GitHub signs for a run of the payout workflow, except as changed by `claims` or `key`. */
+function runToken(claims: Record<string, unknown> = {}, key = github.privateKey): string {
+  const now = Math.floor(Date.now() / 1000);
+  const body = {
+    iss: "https://token.actions.githubusercontent.com", aud: "spot-the-bot-payouts", sub: "repo:acme/spot-the-bot:ref:refs/heads/main",
+    repository: "acme/spot-the-bot", repository_id: "1001", repository_owner: "acme", repository_owner_id: "77", ref: "refs/heads/main",
+    job_workflow_ref: "acme/spot-the-bot/.github/workflows/payouts.yml@refs/heads/main", event_name: "schedule", run_id: "555",
+    iat: now - 5, exp: now + 300, ...claims,
+  };
+  const unsigned = `${b64({ alg: "RS256", kid: "gh-1", typ: "JWT" })}.${b64(body)}`;
+  return `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(key).toString("base64url")}`;
+}
+
 test("a Google sign-in is believed only if Google signed it, for this site, in date", async () => {
   const auth = await import("../auth");
   await assert.rejects(auth.verifyGoogleCredential(idToken()), /isn't set up/, "nothing is accepted until the site has a client id");
@@ -214,5 +231,69 @@ test("prizes build up in a player's balance, and are sent once they say where", 
     assert.equal((await game.whoAmI(null, "another-browser-cookie")).balance, 0);
   } finally {
     process.env.PAYMENT_MODE = "mock";
+  }
+});
+
+// --- The payout job proving who it is ---------------------------------------------
+
+test("the website tells only the payout workflow what is owed, and takes only its word on what was paid", async () => {
+  const job = await import("../payout-job");
+  const game = await import("../game");
+  const REPO = "acme/spot-the-bot";
+  const ask = (claims: Record<string, unknown> = {}, key = github.privateKey) => job.requirePayoutJob(`Bearer ${runToken(claims, key)}`);
+
+  // Until the site is told which repository's workflow to trust, nothing can ask.
+  await assert.rejects(ask(), /aren't set up/);
+  process.env.PAYOUT_REPOSITORY = REPO;
+  process.env.PAYOUT_REPOSITORY_ID = "1001";
+  process.env.PAYOUT_REPOSITORY_OWNER_ID = "77";
+  try {
+    assert.deepEqual(await ask(), { run: "555", event: "schedule" });
+    assert.equal((await ask({ event_name: "workflow_dispatch" })).event, "workflow_dispatch");
+
+    const refused: [string, Record<string, unknown>][] = [
+      ["another repository", { repository: "mallory/spot-the-bot", job_workflow_ref: "mallory/spot-the-bot/.github/workflows/payouts.yml@refs/heads/main" }],
+      ["the same name under a new owner", { repository_owner_id: "78" }],
+      ["a repository re-created under the same name", { repository_id: "1002" }],
+      ["another branch", { ref: "refs/heads/sneaky", job_workflow_ref: `${REPO}/.github/workflows/payouts.yml@refs/heads/sneaky` }],
+      ["another workflow in the same repository", { job_workflow_ref: `${REPO}/.github/workflows/ci.yml@refs/heads/main` }],
+      ["a pull request", { event_name: "pull_request" }],
+      ["a token made out to something else", { aud: "https://github.com/acme" }],
+      ["an expired token", { exp: Math.floor(Date.now() / 1000) - 600 }],
+      ["another issuer", { iss: "https://accounts.google.com" }],
+    ];
+    for (const [what, claims] of refused) await assert.rejects(ask(claims), /Only the payout job/, what);
+    await assert.rejects(ask({}, stranger.privateKey), /Only the payout job/, "signed by someone else");
+    await assert.rejects(job.requirePayoutJob(undefined), /Only the payout job/);
+    await assert.rejects(job.requirePayoutJob("Bearer nonsense"), /Only the payout job/);
+    // A player's Google sign-in is no use here, and the job's token is no use for signing in.
+    process.env.GOOGLE_CLIENT_ID = CLIENT_ID;
+    await assert.rejects(job.requirePayoutJob(`Bearer ${idToken()}`), /Only the payout job/);
+    await assert.rejects((await import("../auth")).verifyGoogleCredential(runToken()), /didn't check out/);
+    delete process.env.GOOGLE_CLIENT_ID;
+
+    // What it is told: each prize owed and where it goes, and the coin and treasury to pay from.
+    const P7 = "7".repeat(24);
+    const WALLET = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T";
+    const session = await game.enter({ handle: "owed one", player: P7 });
+    await play(game, session, { hunt: (_, right) => (1 - right) as 0 | 1 });
+    await game.saveWallet({ id: P7, name: "x" }, undefined, WALLET);
+    const brief = await job.payoutBrief(120);
+    const mine = brief.owed.filter((o) => o.handle === "owed one");
+    assert.deepEqual(mine, [{ id: session.entryId, roundId: session.roundId, handle: "owed one", wallet: WALLET, prize: { tokens: 20, reason: "hunter" } }]);
+    assert.deepEqual(Object.keys(brief.pay).sort(), ["cluster", "mint", "paymentMode", "rpcUrl", "symbol", "treasury"]);
+
+    // What it may tell the site: that a prize was paid, with the transaction. Nothing else gets through.
+    const signature = "5".repeat(88);
+    await assert.rejects(job.recordPayout({ roundId: "../../etc", id: session.entryId, signature }), /isn't a prize/);
+    await assert.rejects(job.recordPayout({ roundId: session.roundId, id: session.entryId, signature: "not a signature!" }), /isn't a transaction signature/);
+    await assert.rejects(job.recordPayout({ roundId: session.roundId, id: "nosuchentry1", signature }), /no prize/);
+    await job.recordPayout({ roundId: session.roundId, id: session.entryId, signature });
+    assert.equal((await job.payoutBrief(120)).owed.filter((o) => o.handle === "owed one").length, 0);
+    assert.deepEqual([(await peek(session)).prize!.paid, (await peek(session)).prize!.signature, (await game.whoAmI({ id: P7, name: "x" }, undefined)).balance], [true, signature, 0]);
+  } finally {
+    delete process.env.PAYOUT_REPOSITORY;
+    delete process.env.PAYOUT_REPOSITORY_ID;
+    delete process.env.PAYOUT_REPOSITORY_OWNER_ID;
   }
 });

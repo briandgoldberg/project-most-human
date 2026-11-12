@@ -1,14 +1,16 @@
 # Pays the prizes that are owed, once a day.
 #
 # The treasury's key lives here, as a repository secret, and nowhere near the
-# website. Set these under Settings > Secrets and variables > Actions:
+# website. It is the only thing to set, under Settings > Secrets and variables > Actions:
 #
-#   Secrets    TREASURY_SECRET_KEY   the treasury wallet's private key (base58, or a JSON array)
-#              STORE_SECRET          the same value the website uses
-#              SOLANA_RPC_URL        a mainnet RPC URL with its key
-#   Variables  SOLANA_CLUSTER, TOKEN_MINT, TOKEN_SYMBOL, TREASURY_WALLET,
-#              SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY   the same values the website uses
-#              PAYOUT_CAP_TOKENS     the most one run may send (optional, recommended)
+#   Secret     TREASURY_SECRET_KEY   the treasury wallet's private key (base58, or a JSON array)
+#
+# Everything else the job learns from the website: what is owed, which coin,
+# which treasury. It gets that by proving who it is, with the token GitHub
+# signs for each run of this workflow on the main branch; it holds no copy of
+# the website's own secrets. (Optional variables: PAYOUT_SITE, PAYOUT_CAP_TOKENS.
+# Optional secret: SOLANA_RPC_URL, to use a different connection to the chain
+# from the website's.)
 #
 # The website tells players when this runs. Keep PAYOUT_HOUR_UTC there equal to
 # the hour in the schedule below.
@@ -32,21 +34,17 @@ concurrency:
 
 permissions:
   contents: read
+  # Lets the run ask GitHub for a signed token saying which workflow it is. That token is what the website trusts.
+  id-token: write
 
 jobs:
   pay:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PAYMENT_MODE: solana
-      SOLANA_CLUSTER: ${{ vars.SOLANA_CLUSTER }}
-      TOKEN_MINT: ${{ vars.TOKEN_MINT }}
-      TOKEN_SYMBOL: ${{ vars.TOKEN_SYMBOL }}
-      TREASURY_WALLET: ${{ vars.TREASURY_WALLET }}
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
-      PAYOUT_CAP_TOKENS: ${{ vars.PAYOUT_CAP_TOKENS }}
-      STORE_SECRET: ${{ secrets.STORE_SECRET }}
+      PAYOUT_SITE: ${{ vars.PAYOUT_SITE || 'https://project-most-human.vercel.app' }}
+      # The most one run may send. Over that it sends nothing and fails, for a person to look.
+      PAYOUT_CAP_TOKENS: ${{ vars.PAYOUT_CAP_TOKENS || '5000' }}
       SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
       TREASURY_SECRET_KEY: ${{ secrets.TREASURY_SECRET_KEY }}
     steps:
@@ -56,19 +54,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Check the settings are in place
-        run: |
-          missing=""
-          for name in SOLANA_CLUSTER TOKEN_MINT TREASURY_WALLET SUPABASE_URL SUPABASE_PUBLISHABLE_KEY STORE_SECRET SOLANA_RPC_URL TREASURY_SECRET_KEY; do
-            if [ -z "${!name}" ]; then missing="$missing $name"; fi
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::Not set:$missing. Add them under Settings > Secrets and variables > Actions."
-            exit 1
-          fi
       - name: List what is owed
         if: github.event_name == 'workflow_dispatch' && !inputs.execute
         run: npm run prizes
+      - name: Check the treasury key is in place
+        if: github.event_name == 'schedule' || inputs.execute
+        run: |
+          if [ -z "$TREASURY_SECRET_KEY" ]; then
+            echo "::error::TREASURY_SECRET_KEY is not set. Add it under Settings > Secrets and variables > Actions. Nothing was sent."
+            exit 1
+          fi
       - name: Pay what is owed
         if: github.event_name == 'schedule' || inputs.execute
         run: npm run prizes -- --execute

@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { Keypair, PublicKey, Transaction, TransactionInstruction, sendAndConfirmTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
-import { config } from "../src/lib/config";
+import { PAYOUT_AUDIENCE, config } from "../src/lib/config";
 import { markPrizePaid, prizesOwed } from "../src/lib/game";
 import { MEMO_PROGRAM_ID, solanaSetup, toRawAmount } from "../src/lib/payments/solana";
 
@@ -25,6 +25,12 @@ import { MEMO_PROGRAM_ID, solanaSetup, toRawAmount } from "../src/lib/payments/s
  * look. And every payment carries a memo naming the prize it pays, so a prize
  * that was sent but never recorded (the run died in between) is found on the
  * chain next time and recorded, not paid twice.
+ *
+ * There are two ways it can know what is owed. Given the store's own secret
+ * (STORE_SECRET and the rest, as the website has them) it reads the store
+ * directly. Given PAYOUT_SITE instead, as the scheduled job is, it asks the
+ * website, proving who it is with the token GitHub signs for the run: it then
+ * needs no copy of any of the website's settings, only the treasury's key.
  *
  * Before paying an agent's prize, have its builder show you the agent running:
  * a person answering by hand with an agent key doesn't qualify.
@@ -48,9 +54,90 @@ function treasuryKeypair(): Keypair {
   return Keypair.fromSecretKey(trimmed.startsWith("[") ? Uint8Array.from(JSON.parse(trimmed)) : bs58.decode(trimmed));
 }
 
+/**
+ * How a prize is named in the output. The scheduled job's log can be read by anyone who can see the
+ * repository, and every payment's recipient is public on the chain: naming the player next to it would tie
+ * their handle to their wallet. So there the prize goes by its own id.
+ */
+const who = (e: { id: string; handle: string }) => (process.env.GITHUB_ACTIONS ? `prize ${e.id}` : e.handle);
+const where = (wallet: string) => (process.env.GITHUB_ACTIONS ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : wallet);
+
+/** One prize that is owed, as far as paying it goes. */
+interface Owed {
+  id: string;
+  roundId: string;
+  handle: string;
+  wallet?: string | null;
+  prize?: { tokens: number; reason: string };
+}
+
+/** Where what is owed is read from, and where what is paid is written down. */
+interface Ledger {
+  owed(days: number): Promise<Owed[]>;
+  paid(prize: { roundId: string; id: string }, signature?: string): Promise<void>;
+}
+
+const directLedger: Ledger = { owed: (days) => prizesOwed(days), paid: (prize, signature) => markPrizePaid(prize, signature) };
+
+/** The token GitHub signs for this workflow run, made out to the website. Short-lived, so a fresh one is asked for each time. */
+async function runToken(): Promise<string> {
+  const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  const bearer = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  if (!url || !bearer) throw new Error("This run can't prove who it is to the website. The workflow needs `permissions: id-token: write`.");
+  const audience = process.env.PAYOUT_AUDIENCE || PAYOUT_AUDIENCE;
+  const res = await fetch(`${url}&audience=${encodeURIComponent(audience)}`, { headers: { authorization: `bearer ${bearer}` } });
+  const token = res.ok ? ((await res.json()) as { value?: string }).value : undefined;
+  if (!token) throw new Error(`GitHub wouldn't issue this run a token (${res.status}).`);
+  return token;
+}
+
+/**
+ * The website as the ledger. Asking it what is owed also brings back which
+ * coin and treasury to pay from, so this job carries no settings of its own
+ * that could drift from the website's.
+ */
+async function siteLedger(site: string): Promise<Ledger> {
+  const call = async (method: "GET" | "POST", query: string, body?: unknown) => {
+    const res = await fetch(new URL(`/api/payouts${query}`, site), {
+      method,
+      headers: { authorization: `Bearer ${await runToken()}`, ...(body ? { "content-type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) throw new Error(`The website refused (${res.status}): ${String(json.message ?? json.error ?? "no reason given")}`);
+    return json;
+  };
+  return {
+    async owed(days) {
+      const brief = (await call("GET", `?days=${days}`)) as unknown as {
+        owed: Owed[];
+        pay: { paymentMode: string; symbol: string; cluster: string; mint: string | null; treasury: string | null; rpcUrl: string };
+      };
+      const { pay } = brief;
+      // The connection to the chain carries a key. Tell the runner to keep it out of the log before anything can print it.
+      if (!process.env.SOLANA_RPC_URL && pay.rpcUrl) {
+        const key = /[?&][^=]*key[^=]*=([^&]+)/i.exec(pay.rpcUrl)?.[1];
+        if (process.env.GITHUB_ACTIONS) for (const hide of [pay.rpcUrl, key]) if (hide) console.log(`::add-mask::${hide}`);
+        process.env.SOLANA_RPC_URL = pay.rpcUrl;
+      }
+      process.env.PAYMENT_MODE = pay.paymentMode;
+      process.env.TOKEN_SYMBOL = pay.symbol;
+      process.env.SOLANA_CLUSTER = pay.cluster;
+      if (pay.mint) process.env.TOKEN_MINT = pay.mint;
+      if (pay.treasury) process.env.TREASURY_WALLET = pay.treasury;
+      return brief.owed;
+    },
+    paid: async (prize, signature) => void (await call("POST", "", { roundId: prize.roundId, id: prize.id, signature })),
+  };
+}
+
 async function main() {
+  const site = process.env.PAYOUT_SITE;
+  const ledger = site ? await siteLedger(site) : directLedger;
+  const owed = (await ledger.owed(Math.max(1, Number(args.days) || 120))).filter((e) => !args.only || e.id === args.only);
+  // Read after the ledger has been asked: with the website as the ledger, that is where the coin and treasury come from.
   const cfg = config();
-  const owed = (await prizesOwed(Math.max(1, Number(args.days) || 120))).filter((e) => !args.only || e.id === args.only);
+  console.log(`Paying in ${cfg.tokenSymbol}${cfg.paymentMode === "solana" ? ` on Solana ${cfg.solana.cluster}, from ${cfg.solana.treasury}` : " (test mode)"}${site ? `, as told by ${new URL(site).host}` : ""}.`);
   if (owed.length === 0) {
     console.log("Nothing is owed.");
     return;
@@ -59,7 +146,7 @@ async function main() {
   console.log(`${owed.length} prize(s) owed, ${total} ${cfg.tokenSymbol} in all:`);
   for (const e of owed) {
     console.log(
-      `  ${String(e.prize!.tokens).padStart(8)} ${cfg.tokenSymbol}  ${e.prize!.reason === "hunter" ? "hunter" : "agent "}  ${e.handle.padEnd(20)}  ${e.wallet ?? "(in their balance: no address yet)"}  [${e.id}]`,
+      `  ${String(e.prize!.tokens).padStart(8)} ${cfg.tokenSymbol}  ${e.prize!.reason === "hunter" ? "hunter" : "agent "}  ${who(e).padEnd(20)}  ${e.wallet ? where(e.wallet) : "(in their balance: no address yet)"}  [${e.id}]`,
     );
   }
   // What this run would actually send: prizes with somewhere to go. The rest stay in their owners' balances.
@@ -77,7 +164,7 @@ async function main() {
   }
 
   if (cfg.paymentMode === "mock") {
-    for (const e of owed) await markPrizePaid(e);
+    for (const e of owed) await ledger.paid(e);
     console.log("\nMarked as paid (test mode: nothing was transferred).");
     return;
   }
@@ -102,8 +189,8 @@ async function main() {
   for (const e of payable) {
     const sentBefore = alreadySent(e);
     if (sentBefore) {
-      await record(e, sentBefore);
-      console.log(`  ${e.handle} was already paid (${sentBefore}); recorded it`);
+      await record(ledger, e, sentBefore);
+      console.log(`  ${who(e)} was already paid (${sentBefore}); recorded it`);
       continue;
     }
     const to = new PublicKey(e.wallet!);
@@ -117,16 +204,16 @@ async function main() {
       signature = await sendAndConfirmTransaction(connection, tx, [key]);
     } catch (err) {
       const sol = (await connection.getBalance(treasury)) / 1e9;
-      console.error(`  FAILED to pay ${e.handle} (treasury holds ${sol} SOL for fees): ${err instanceof Error ? err.message : err}`);
+      console.error(`  FAILED to pay ${who(e)} (treasury holds ${sol} SOL for fees): ${err instanceof Error ? err.message : err}`);
       process.exitCode = 1;
       continue;
     }
     try {
-      await record(e, signature);
-      console.log(`  paid ${e.handle}: ${signature}`);
+      await record(ledger, e, signature);
+      console.log(`  paid ${who(e)}: ${signature}`);
     } catch (err) {
       // Sent, but the game doesn't know. Stop here: the next run finds this payment by its memo and records it.
-      console.error(`  PAID ${e.handle} (${signature}) BUT COULD NOT RECORD IT: ${err instanceof Error ? err.message : err}. Stopping.`);
+      console.error(`  PAID ${who(e)} (${signature}) BUT COULD NOT RECORD IT: ${err instanceof Error ? err.message : err}. Stopping.`);
       process.exitCode = 2;
       return;
     }
@@ -136,10 +223,10 @@ async function main() {
 }
 
 /** Record a payment that has gone out. The store can be briefly unreachable, and this must not be lost, so it tries a few times. */
-async function record(e: { roundId: string; id: string }, signature: string): Promise<void> {
+async function record(ledger: Ledger, e: { roundId: string; id: string }, signature: string): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await markPrizePaid(e, signature);
+      return await ledger.paid(e, signature);
     } catch (err) {
       if (attempt >= 4) throw err;
       await new Promise((r) => setTimeout(r, attempt * 2000));

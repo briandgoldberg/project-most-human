@@ -34,6 +34,9 @@ function payoutHour(value: string | undefined): number | undefined {
   return value !== undefined && Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : undefined;
 }
 
+/** What the payout job asks GitHub to make its token out to, so a token made for anything else is no use here. */
+export const PAYOUT_AUDIENCE = "spot-the-bot-payouts";
+
 export type PaymentMode = "mock" | "solana";
 
 export function config() {
@@ -85,6 +88,20 @@ export function config() {
      * by hand and no time is promised.
      */
     payoutHourUtc: payoutHour(env("PAYOUT_HOUR_UTC")),
+    /**
+     * Who the payout job is. It runs on GitHub and proves it with a token GitHub signs for it; the website
+     * then tells it what is owed and takes its word on what was paid. Unset, nothing can ask.
+     */
+    payoutJob: {
+      /** "owner/name" of the repository whose workflow may ask. */
+      repository: env("PAYOUT_REPOSITORY"),
+      /** GitHub's own numbers for that repository and its owner, which survive renames. Checked when set. */
+      repositoryId: env("PAYOUT_REPOSITORY_ID"),
+      ownerId: env("PAYOUT_REPOSITORY_OWNER_ID"),
+      workflow: env("PAYOUT_WORKFLOW") ?? ".github/workflows/payouts.yml",
+      branch: env("PAYOUT_BRANCH") ?? "main",
+      audience: env("PAYOUT_AUDIENCE") ?? PAYOUT_AUDIENCE,
+    },
     /** How long a player has to finish after entering. */
     sessionMinutes: num("SESSION_MINUTES", 30),
     questionSalt: env("QUESTION_SALT") ?? "",
